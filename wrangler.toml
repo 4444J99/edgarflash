@@ -1,0 +1,26 @@
+name = "edgarflash"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+
+# Poll SEC EDGAR every minute. (1-min minimum on Workers cron.)
+[triggers]
+crons = ["* * * * *"]
+
+[[kv_namespaces]]
+binding = "EF_STATE"
+id = "d43fff582095440abd6daff456470e8f"
+
+[[kv_namespaces]]
+binding = "EF_SUBS"
+id = "2134c1bb7a5f47c1a5e9ebf15b8febda"
+
+[vars]
+USER_AGENT = "EdgarFlash hello@edgarflash.dev"  # SEC requires UA with contact
+
+[observability]
+enabled = true
