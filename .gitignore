@@ -2,3 +2,7 @@ node_modules
 .wrangler
 .dev.vars
 .env*
+
+# Override global ignore — landing page MUST ship to GitHub.
+!public/
+!public/**
