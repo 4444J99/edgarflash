@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgarFlash — real-time SEC EDGAR filing alerts</title>
+<meta name="description" content="Insider trades and material events delivered to your webhook within seconds of SEC EDGAR publication. Free tier feed. Pro $99/mo. Institutional $999/mo.">
+<meta property="og:title" content="EdgarFlash — real-time SEC alerts">
+<meta property="og:description" content="Form 4 + 8-K filings delivered to your webhook within seconds.">
+<style>
+:root {
+  --bg: #0a0e14;
+  --fg: #e8eef5;
+  --muted: #7a8898;
+  --accent: #ff6b35;
+  --good: #4ade80;
+  --card: #131a23;
+  --border: #1f2937;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: -apple-system, system-ui, sans-serif; line-height: 1.6; padding: 32px 16px; max-width: 760px; margin: 0 auto; }
+header { text-align: center; padding: 24px 0 32px; }
+h1 { font-size: 42px; letter-spacing: -0.03em; }
+h1 .flash { color: var(--accent); }
+.tagline { color: var(--muted); font-size: 18px; margin-top: 8px; }
+section { margin: 32px 0; }
+h2 { font-size: 22px; margin-bottom: 12px; }
+.pricing { display: grid; gap: 16px; grid-template-columns: 1fr; }
+@media (min-width: 600px) { .pricing { grid-template-columns: 1fr 1fr 1fr; } }
+.tier { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.tier.featured { border-color: var(--accent); }
+.tier h3 { font-size: 18px; }
+.tier .price { font-size: 32px; font-weight: 700; margin: 8px 0; }
+.tier .price small { color: var(--muted); font-size: 14px; font-weight: 400; }
+.tier ul { list-style: none; margin-top: 12px; font-size: 14px; }
+.tier li { padding: 4px 0; color: var(--muted); }
+.tier li::before { content: "→ "; color: var(--good); }
+.feed-preview { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; max-height: 360px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 13px; }
+.filing { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.filing:last-child { border-bottom: 0; }
+.filing .form { color: var(--accent); font-weight: 600; }
+.filing .ts { color: var(--muted); font-size: 11px; }
+.filing a { color: var(--fg); text-decoration: none; }
+.filing a:hover { text-decoration: underline; }
+form input { background: var(--card); border: 1px solid var(--border); color: var(--fg); padding: 10px; border-radius: 4px; font-size: 14px; width: 100%; margin-bottom: 8px; }
+form button { background: var(--accent); color: white; border: 0; padding: 10px 20px; border-radius: 4px; font-weight: 600; cursor: pointer; }
+form button:hover { filter: brightness(1.1); }
+code { background: var(--card); padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 13px; }
+footer { text-align: center; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 36px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.cta-row { display: flex; gap: 12px; align-items: center; }
+.cta-row input { flex: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Edgar<span class="flash">Flash</span></h1>
+  <p class="tagline">Form 4 + 8-K filings delivered to your webhook in seconds.</p>
+</header>
+
+<section>
+  <h2>Live feed</h2>
+  <div id="feed" class="feed-preview">loading…</div>
+  <p style="margin-top:8px; color: var(--muted); font-size:13px;">Free-tier preview. Pro tier delivers via webhook within 5–30 seconds of EDGAR publication.</p>
+</section>
+
+<section>
+  <h2>Pricing</h2>
+  <div class="pricing">
+    <div class="tier">
+      <h3>Free</h3>
+      <div class="price">$0</div>
+      <ul>
+        <li>Web feed access</li>
+        <li>Updates every 60s</li>
+        <li>Latest 50 filings</li>
+        <li>No webhook delivery</li>
+      </ul>
+    </div>
+    <div class="tier featured">
+      <h3>Pro</h3>
+      <div class="price">$99 <small>/ month</small></div>
+      <ul>
+        <li>Real-time webhook delivery</li>
+        <li>Form 4 + 8-K + custom forms</li>
+        <li>Ticker filtering</li>
+        <li>5–30s delivery latency</li>
+        <li>Email + Slack endpoints</li>
+      </ul>
+      <button onclick="subscribe('pro')" style="margin-top:12px; width:100%;">Subscribe</button>
+    </div>
+    <div class="tier">
+      <h3>Institutional</h3>
+      <div class="price">$999 <small>/ month</small></div>
+      <ul>
+        <li>Everything in Pro</li>
+        <li>SLA 5s delivery</li>
+        <li>Multiple webhooks</li>
+        <li>Priority delivery queue</li>
+        <li>Custom form types</li>
+        <li>Dedicated support</li>
+      </ul>
+      <button onclick="subscribe('institutional')" style="margin-top:12px; width:100%;">Contact</button>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Why EdgarFlash</h2>
+  <p>EDGAR publishes thousands of filings per day. By the time you find the relevant one in your normal flow, the market has already moved. EdgarFlash watches the firehose for you, filters by what you care about, and delivers within seconds. Built on Cloudflare's edge — runs in 200+ locations, polls every minute (cron minimum on Workers), pushes through to your endpoint with sub-100ms transit.</p>
+</section>
+
+<section>
+  <h2>API</h2>
+  <p><code>GET /api/feed</code> — recent filings JSON</p>
+  <p><code>POST /api/subscribe</code> — register (body: <code>{email, webhook_url, plan, forms?, tickers?}</code>)</p>
+  <p><code>GET /api/status</code> — system health</p>
+  <p><code>GET /api/subscription/&lt;id&gt;</code> — your subscription status</p>
+</section>
+
+<section>
+  <h2>Subscribe</h2>
+  <p>Drop your email + webhook URL — Pro plans activate as soon as Stripe is live. Free tier active immediately.</p>
+  <form onsubmit="event.preventDefault(); subscribeForm()">
+    <input id="email-in" type="email" placeholder="you@your-fund.com" required>
+    <input id="webhook-in" type="url" placeholder="https://your-system.example.com/webhook (Pro only)">
+    <select id="plan-in" style="background: var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; width:100%; margin-bottom:8px;">
+      <option value="free">Free — web feed only</option>
+      <option value="pro">Pro — $99/mo with webhook</option>
+      <option value="institutional">Institutional — $999/mo</option>
+    </select>
+    <button type="submit">Subscribe</button>
+  </form>
+  <div id="sub-result" style="margin-top:12px; color: var(--muted); font-size:13px;"></div>
+</section>
+
+<footer>
+  <p>EdgarFlash • <a href="/api/feed">API</a> • Powered by SEC EDGAR (<a href="https://www.sec.gov/edgar/about" rel="noopener">about</a>)</p>
+  <p style="margin-top:10px">Sister products:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:6px">
+    <a style="background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:14px;font-size:12px;text-decoration:none" href="https://promptscope.ivixivi.workers.dev">PromptScope</a>
+    <a style="background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:14px;font-size:12px;text-decoration:none" href="https://writelens.ivixivi.workers.dev">WriteLens</a>
+    <a style="background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:14px;font-size:12px;text-decoration:none" href="https://bountyscope.ivixivi.workers.dev">BountyScope</a>
+    <a style="background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:14px;font-size:12px;text-decoration:none" href="https://trendpulse.ivixivi.workers.dev">TrendPulse</a>
+    <a style="background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:14px;font-size:12px;text-decoration:none" href="https://vulnpulse.ivixivi.workers.dev">VulnPulse</a>
+  </div>
+</footer>
+
+<script>
+async function loadFeed() {
+  try {
+    const r = await fetch("/api/feed");
+    const data = await r.json();
+    const feed = document.getElementById("feed");
+    if (!data.filings || data.filings.length === 0) {
+      feed.innerHTML = '<em>No filings yet — feed populates within 60s of first cron run.</em>';
+      return;
+    }
+    feed.innerHTML = data.filings.slice(0, 30).map(f => `
+      <div class="filing">
+        <span class="form">${escapeHtml(f.form)}</span>
+        <a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">${escapeHtml(f.title)}</a>
+        <div class="ts">${escapeHtml(f.filed_at)}${f.cik ? ' • CIK ' + escapeHtml(f.cik) : ''}</div>
+      </div>
+    `).join("");
+  } catch (err) {
+    document.getElementById("feed").textContent = 'feed unavailable';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function subscribe(plan) {
+  document.getElementById('plan-in').value = plan;
+  document.getElementById('email-in').focus();
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+async function subscribeForm() {
+  const email = document.getElementById('email-in').value;
+  const webhook_url = document.getElementById('webhook-in').value || undefined;
+  const plan = document.getElementById('plan-in').value;
+  const result = document.getElementById('sub-result');
+  result.textContent = 'Submitting…';
+  try {
+    const r = await fetch('/api/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, webhook_url, plan }),
+    });
+    const data = await r.json();
+    if (r.ok || r.status === 202) {
+      result.textContent = `${data.message || 'Subscribed'} — id: ${data.subscription_id}`;
+      result.style.color = 'var(--good)';
+    } else {
+      result.textContent = `Error: ${data.error}`;
+      result.style.color = '#f55';
+    }
+  } catch (err) {
+    result.textContent = `Network error: ${err.message}`;
+    result.style.color = '#f55';
+  }
+}
+
+loadFeed();
+setInterval(loadFeed, 30_000);
+</script>
+
+</body>
+</html>
