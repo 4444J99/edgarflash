@@ -21,6 +21,12 @@ id = "2134c1bb7a5f47c1a5e9ebf15b8febda"
 
 [vars]
 USER_AGENT = "EdgarFlash hello@edgarflash.dev"  # SEC requires UA with contact
+PAYRAIL_URL = "https://payrail.ivixivi.workers.dev"
+
+# Shared fleet money rail — internal worker→worker binding (preferred over PAYRAIL_URL).
+[[services]]
+binding = "PAYRAIL"
+service = "payrail"
 
 [observability]
 enabled = true
