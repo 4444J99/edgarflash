@@ -90,6 +90,7 @@ a:hover { text-decoration: underline; }
         <li>Email + Slack endpoints</li>
       </ul>
       <button onclick="subscribe('pro')" style="margin-top:12px; width:100%;">Subscribe</button>
+      <button onclick="upgrade('pro')" style="margin-top:8px; width:100%;">Upgrade — pay with USDC</button>
     </div>
     <div class="tier">
       <h3>Institutional</h3>
@@ -103,8 +104,33 @@ a:hover { text-decoration: underline; }
         <li>Dedicated support</li>
       </ul>
       <button onclick="subscribe('institutional')" style="margin-top:12px; width:100%;">Contact</button>
+      <button onclick="upgrade('institutional')" style="margin-top:8px; width:100%;">Upgrade — pay with USDC</button>
     </div>
   </div>
+</section>
+
+<section id="checkout" style="display:none">
+  <h2 id="checkout-title">Upgrade</h2>
+  <p style="color:var(--muted); font-size:13px;" id="checkout-sub">Pay once with USDC on Base. You'll get an address and a unique memo — send, then paste your transaction hash to unlock instantly. No card, no account. A webhook URL is required so we can deliver your filings.</p>
+  <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
+    <input id="co-email" type="email" placeholder="you@your-fund.com" style="background:var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; font-size:14px; width:100%;">
+    <input id="co-webhook" type="url" placeholder="https://hooks.slack.com/... (delivery endpoint, required)" style="background:var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; font-size:14px; width:100%;">
+    <button onclick="startCheckout()" id="co-btn" style="background:var(--accent); color:white; border:0; padding:10px 20px; border-radius:4px; font-weight:600; cursor:pointer;">Get payment details</button>
+  </div>
+  <div id="co-quote" style="display:none; margin-top:14px;">
+    <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; font-size:13px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 0; border-bottom:1px solid var(--border);"><span style="color:var(--muted); min-width:120px;">Amount</span><span style="font-family:ui-monospace,monospace; word-break:break-all;" id="q-amount"></span></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 0; border-bottom:1px solid var(--border);"><span style="color:var(--muted); min-width:120px;">Asset / chain</span><span style="font-family:ui-monospace,monospace; word-break:break-all;" id="q-asset"></span></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 0; border-bottom:1px solid var(--border);"><span style="color:var(--muted); min-width:120px;">Send to</span><span style="font-family:ui-monospace,monospace; word-break:break-all;" id="q-address"></span><button onclick="copyAddr()" id="q-copy" style="background:var(--accent); color:white; border:0; padding:4px 8px; border-radius:4px; font-weight:600; cursor:pointer; font-size:11px;">copy</button></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 0;"><span style="color:var(--muted); min-width:120px;">Memo (quote id)</span><span style="font-family:ui-monospace,monospace; word-break:break-all;" id="q-quote"></span></div>
+    </div>
+    <p style="color:var(--muted); font-size:13px; margin-top:8px;" id="q-instructions"></p>
+    <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+      <input id="co-tx" type="text" placeholder="0x… transaction hash" style="background:var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; font-size:14px; width:100%;">
+      <button onclick="confirmTx()" id="co-confirm-btn" style="background:var(--accent); color:white; border:0; padding:10px 20px; border-radius:4px; font-weight:600; cursor:pointer;">I've sent it — unlock</button>
+    </div>
+  </div>
+  <p style="font-size:13px; margin-top:8px;" id="co-msg"></p>
 </section>
 
 <section>
@@ -203,6 +229,86 @@ async function subscribeForm() {
   } catch (err) {
     result.textContent = `Network error: ${err.message}`;
     result.style.color = '#f55';
+  }
+}
+
+let CO = { tier: null, quote_id: null, address: null, confirm_url: '/api/confirm' };
+
+function upgrade(tier) {
+  CO.tier = tier;
+  const price = tier === 'institutional' ? '999' : '99';
+  const label = tier.charAt(0).toUpperCase() + tier.slice(1);
+  document.getElementById('checkout-title').textContent = `Upgrade to ${label} — $${price}/mo`;
+  const sec = document.getElementById('checkout');
+  sec.style.display = '';
+  document.getElementById('co-quote').style.display = 'none';
+  document.getElementById('co-msg').textContent = '';
+  sec.scrollIntoView({ behavior: 'smooth' });
+  document.getElementById('co-email').focus();
+}
+
+async function startCheckout() {
+  const btn = document.getElementById('co-btn');
+  const email = document.getElementById('co-email').value.trim();
+  const webhook_url = document.getElementById('co-webhook').value.trim();
+  const msg = document.getElementById('co-msg');
+  if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) { msg.style.color = 'var(--accent)'; msg.textContent = 'enter a valid email'; return; }
+  if (!webhook_url || !/^https?:\/\/.+/i.test(webhook_url)) { msg.style.color = 'var(--accent)'; msg.textContent = 'paid plans require a webhook URL (https://…) for delivery'; return; }
+  btn.disabled = true; btn.textContent = 'getting quote…';
+  try {
+    const r = await fetch('/api/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, plan: CO.tier, webhook_url })
+    });
+    const d = await r.json();
+    if (r.status === 402 && d.pay_to) {
+      CO.quote_id = d.quote_id; CO.address = d.pay_to.address; CO.confirm_url = d.confirm_url || '/api/confirm';
+      document.getElementById('q-amount').textContent = `${d.pay_to.amount} ${d.pay_to.asset}`;
+      document.getElementById('q-asset').textContent = `${d.pay_to.asset} on ${d.pay_to.chain}`;
+      document.getElementById('q-address').textContent = d.pay_to.address;
+      document.getElementById('q-quote').textContent = d.quote_id;
+      document.getElementById('q-instructions').textContent = d.instructions || '';
+      document.getElementById('co-quote').style.display = '';
+      msg.style.color = 'var(--muted)'; msg.textContent = 'Send the exact amount, then paste your transaction hash below.';
+    } else if (r.ok || r.status === 202) {
+      msg.style.color = 'var(--good)'; msg.textContent = d.message || 'subscribed';
+    } else {
+      msg.style.color = 'var(--accent)'; msg.textContent = d.error || 'could not start checkout';
+    }
+  } catch (e) {
+    msg.style.color = 'var(--accent)'; msg.textContent = 'network error — try again';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Get payment details';
+  }
+}
+
+async function copyAddr() {
+  try {
+    await navigator.clipboard.writeText(CO.address || '');
+    const b = document.getElementById('q-copy'); b.textContent = 'copied';
+    setTimeout(() => { b.textContent = 'copy'; }, 1500);
+  } catch (e) {}
+}
+
+async function confirmTx() {
+  const btn = document.getElementById('co-confirm-btn');
+  const tx = document.getElementById('co-tx').value.trim();
+  const msg = document.getElementById('co-msg');
+  if (!/^0x[0-9a-fA-F]{6,}$/.test(tx)) { msg.style.color = 'var(--accent)'; msg.textContent = 'paste a valid 0x… transaction hash'; return; }
+  if (!CO.quote_id) { msg.style.color = 'var(--accent)'; msg.textContent = 'get a payment quote first'; return; }
+  btn.disabled = true; btn.textContent = 'verifying…';
+  try {
+    const r = await fetch(CO.confirm_url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quote_id: CO.quote_id, tx_hash: tx })
+    });
+    const d = await r.json();
+    if (r.ok) { msg.style.color = 'var(--good)'; msg.textContent = `✓ ${CO.tier} unlocked — receipt recorded. Filings will flow to your webhook.`; }
+    else { msg.style.color = 'var(--accent)'; msg.textContent = d.error || 'payment not verified yet — on-chain confirmation can take a moment, try again shortly'; }
+  } catch (e) {
+    msg.style.color = 'var(--accent)'; msg.textContent = 'network error — try again';
+  } finally {
+    btn.disabled = false; btn.textContent = "I've sent it — unlock";
   }
 }
 
