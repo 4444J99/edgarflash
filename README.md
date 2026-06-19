@@ -46,6 +46,20 @@ Paid access is issued for a 31-day period after payment confirmation.
 - SEC EDGAR Atom feeds (no SEC API key required)
 - Hashed EdgarFlash API keys stored in KV for paid real-time access
 
+## Development
+
+```bash
+npm install
+npm run lint        # eslint (flat config + typescript-eslint)
+npm run typecheck   # tsc --noEmit
+npm test            # vitest unit tests
+npm run build       # wrangler deploy --dry-run (bundles the Worker)
+npm run dev         # wrangler dev (local)
+```
+
+CI (`.github/workflows/ci.yml`) runs lint, type-check, tests, and the build on
+every pull request and on pushes to `main`.
+
 ## Sister products
 
 EdgarFlash is part of an intelligence portfolio:

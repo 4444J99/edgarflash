@@ -123,15 +123,15 @@ async function hmacHex(secret: string, message: string): Promise<string> {
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function isPaidPlan(plan: Plan): plan is PaidPlan {
+export function isPaidPlan(plan: Plan): plan is PaidPlan {
   return plan === 'pro' || plan === 'institutional';
 }
 
-function currentPeriodEnd(start = new Date()): string {
+export function currentPeriodEnd(start = new Date()): string {
   return new Date(start.getTime() + PAID_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function hasPaidAccess(sub: Subscription): boolean {
+export function hasPaidAccess(sub: Subscription): boolean {
   if (!sub.active || !isPaidPlan(sub.plan)) return false;
   if (!sub.current_period_end) return true; // legacy active paid subscriptions remain enabled.
   return Date.parse(sub.current_period_end) > Date.now();
@@ -150,12 +150,12 @@ function newSecret(): string {
   return randomBase64Url(24);
 }
 
-async function sha256Hex(message: string): Promise<string> {
+export async function sha256Hex(message: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function timingSafeEqualHex(a: string, b: string): boolean {
+export function timingSafeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -172,7 +172,7 @@ async function issueApiKey(env: Env, sub: Subscription): Promise<string> {
   return apiKey;
 }
 
-function extractApiKey(req: Request): string | undefined {
+export function extractApiKey(req: Request): string | undefined {
   const headerKey = req.headers.get('x-api-key')?.trim();
   if (headerKey) return headerKey;
 
@@ -184,7 +184,7 @@ function extractApiKey(req: Request): string | undefined {
   return queryKey || undefined;
 }
 
-function parseApiKey(apiKey: string): { keyId: string } | null {
+export function parseApiKey(apiKey: string): { keyId: string } | null {
   const prefix = `${API_KEY_PREFIX}_`;
   if (!apiKey.startsWith(prefix)) return null;
   const rest = apiKey.slice(prefix.length);
@@ -230,7 +230,7 @@ function apiAuthError(auth: ApiAuthResult, fallback = 'api_key_required'): Respo
   return Response.json({ error: auth.error ?? fallback }, { status: auth.status ?? 401 });
 }
 
-function freeVisibleFilings(filings: Filing[]): Filing[] {
+export function freeVisibleFilings(filings: Filing[]): Filing[] {
   const cutoff = Date.now() - FREE_FEED_DELAY_MS;
   return filings
     .filter(f => {
@@ -240,14 +240,14 @@ function freeVisibleFilings(filings: Filing[]): Filing[] {
     .slice(0, FREE_FEED_LIMIT);
 }
 
-function normalizeForms(input: unknown): string[] {
+export function normalizeForms(input: unknown): string[] {
   const requested = Array.isArray(input) ? input.map(String) : FORMS_TO_WATCH;
   const allowed = new Set(FORMS_TO_WATCH);
   const forms = requested.map(f => f.trim()).filter(f => allowed.has(f));
   return [...new Set(forms)];
 }
 
-function normalizeTickers(input: unknown): string[] {
+export function normalizeTickers(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return [...new Set(input.map(t => String(t).trim().toUpperCase()).filter(Boolean))];
 }
@@ -265,7 +265,7 @@ async function fetchEdgarFilings(form: string, env: Env): Promise<Filing[]> {
   return parseAtomFeed(xml, form);
 }
 
-function parseAtomFeed(xml: string, form: string): Filing[] {
+export function parseAtomFeed(xml: string, form: string): Filing[] {
   const filings: Filing[] = [];
   // Light XML parse — Atom <entry> blocks, extract title / link / updated / id / summary
   const entries = xml.split('<entry>').slice(1);
@@ -305,7 +305,7 @@ function match(s: string, re: RegExp): string | undefined {
   return m?.[1];
 }
 
-function stripHtml(s: string): string {
+export function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
