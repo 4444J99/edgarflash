@@ -6,39 +6,45 @@
 
 EdgarFlash polls SEC EDGAR Form 4 (insider transactions) and 8-K (material events) Atom
 feeds every minute, dedupes against the last-seen state in KV, and delivers fresh
-filings via webhook to paid subscribers. Free tier shows the last 50 filings on the web
-feed.
+filings via webhook and API-key feeds to paid subscribers. Free tier is delayed
+15 minutes and limited to 10 filings.
 
 ## API
 
 ```
-GET  /api/recent            — Last 50 filings (web feed)
-GET  /api/by-cik/:cik       — Filings for a specific CIK
-POST /api/subscribe         — Subscribe webhook to filing types
+GET  /api/feed              — Delayed public feed; real-time with Authorization: Bearer ef_live_...
+GET  /api/realtime          — Paid API-key real-time feed
+POST /api/subscribe         — Create free/pending paid subscription
+POST /api/confirm           — Confirm payment and receive one-time API key
+GET  /api/subscription/:id  — Subscription status, no API secret
 GET  /api/status            — System health
 ```
 
+Paid API calls accept either `Authorization: Bearer <api_key>` or `x-api-key:
+<api_key>`.
+
 ## Pricing
 
-| Tier      | Price     | What's included                                      |
-|-----------|-----------|------------------------------------------------------|
-| Free      | $0        | Last 50 filings, web feed, public API                |
-| Pro       | $99/mo    | Real-time webhook (Form 4 + 8-K) within 60s of EDGAR |
-| Hedge     | $999/mo   | Custom CIK watchlist + Slack/Teams + SLA + history   |
+| Tier          | Price   | What's included                                      |
+|---------------|---------|------------------------------------------------------|
+| Free          | $0      | 15-minute delayed feed, latest 10 filings            |
+| Pro           | $99/mo  | Real-time API key + webhook, 25 ticker filters       |
+| Institutional | $299/mo | Real-time API key + webhook, 100 ticker filters      |
 
-**Pay any rail:** GitHub Sponsors, crypto, BMC, latent Stripe.
+Paid access is issued for a 31-day period after payment confirmation.
 
 ## Use cases
 
 - Insider transaction signal layer for trading systems
 - 8-K material event alerts for analysts and journalists
-- Portfolio-company watch (custom CIK list at Hedge tier)
+- Portfolio-company watch (custom CIK list at Institutional tier)
 
 ## Stack
 
 - Cloudflare Workers (compute + 1-min cron)
 - Cloudflare KV — last-seen state, subscription registry
-- SEC EDGAR Atom feeds (no API key required)
+- SEC EDGAR Atom feeds (no SEC API key required)
+- Hashed EdgarFlash API keys stored in KV for paid real-time access
 
 ## Sister products
 
