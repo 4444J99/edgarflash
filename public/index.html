@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EdgarFlash — real-time SEC EDGAR filing alerts</title>
-<meta name="description" content="Insider trades and material events delivered to your webhook within seconds of SEC EDGAR publication. Free tier feed. Pro $99/mo. Institutional $999/mo.">
+<meta name="description" content="Insider trades and material events delivered to your webhook and API key within seconds of SEC EDGAR publication. Free tier is delayed and limited. Pro $99/mo. Institutional $299/mo.">
 <meta property="og:title" content="EdgarFlash — real-time SEC alerts">
 <meta property="og:description" content="Form 4 + 8-K filings delivered to your webhook within seconds.">
 <style>
@@ -63,7 +63,7 @@ a:hover { text-decoration: underline; }
 <section>
   <h2>Live feed</h2>
   <div id="feed" class="feed-preview">loading…</div>
-  <p style="margin-top:8px; color: var(--muted); font-size:13px;">Free-tier preview. Pro tier delivers via webhook within 5–30 seconds of EDGAR publication.</p>
+  <p style="margin-top:8px; color: var(--muted); font-size:13px;">Free-tier preview is delayed and limited. Paid API keys unlock the real-time feed and webhook delivery.</p>
 </section>
 
 <section>
@@ -73,45 +73,46 @@ a:hover { text-decoration: underline; }
       <h3>Free</h3>
       <div class="price">$0</div>
       <ul>
-        <li>Web feed access</li>
-        <li>Updates every 60s</li>
-        <li>Latest 50 filings</li>
-        <li>No webhook delivery</li>
+        <li>Delayed web feed access</li>
+        <li>15-minute delay</li>
+        <li>Latest 10 visible filings</li>
+        <li>No API key or webhook</li>
       </ul>
     </div>
     <div class="tier featured">
       <h3>Pro</h3>
       <div class="price">$99 <small>/ month</small></div>
       <ul>
+        <li>Real-time API key</li>
         <li>Real-time webhook delivery</li>
-        <li>Form 4 + 8-K + custom forms</li>
-        <li>Ticker filtering</li>
+        <li>Form 4 + 8-K alerts</li>
+        <li>25 ticker filters</li>
         <li>5–30s delivery latency</li>
-        <li>Email + Slack endpoints</li>
+        <li>31 days of access</li>
       </ul>
       <button onclick="subscribe('pro')" style="margin-top:12px; width:100%;">Subscribe</button>
-      <button onclick="upgrade('pro')" style="margin-top:8px; width:100%;">Upgrade — pay with USDC</button>
+      <button onclick="upgrade('pro')" style="margin-top:8px; width:100%;">Start — pay with USDC</button>
     </div>
     <div class="tier">
       <h3>Institutional</h3>
-      <div class="price">$999 <small>/ month</small></div>
+      <div class="price">$299 <small>/ month</small></div>
       <ul>
         <li>Everything in Pro</li>
-        <li>SLA 5s delivery</li>
-        <li>Multiple webhooks</li>
-        <li>Priority delivery queue</li>
-        <li>Custom form types</li>
-        <li>Dedicated support</li>
+        <li>Real-time API + webhook delivery</li>
+        <li>100 ticker filters</li>
+        <li>Form 4 + 8-K watchlists</li>
+        <li>B2B support channel</li>
+        <li>31 days of access</li>
       </ul>
-      <button onclick="subscribe('institutional')" style="margin-top:12px; width:100%;">Contact</button>
-      <button onclick="upgrade('institutional')" style="margin-top:8px; width:100%;">Upgrade — pay with USDC</button>
+      <button onclick="subscribe('institutional')" style="margin-top:12px; width:100%;">Subscribe</button>
+      <button onclick="upgrade('institutional')" style="margin-top:8px; width:100%;">Start — pay with USDC</button>
     </div>
   </div>
 </section>
 
 <section id="checkout" style="display:none">
   <h2 id="checkout-title">Upgrade</h2>
-  <p style="color:var(--muted); font-size:13px;" id="checkout-sub">Pay once with USDC on Base. You'll get an address and a unique memo — send, then paste your transaction hash to unlock instantly. No card, no account. A webhook URL is required so we can deliver your filings.</p>
+  <p style="color:var(--muted); font-size:13px;" id="checkout-sub">Pay the monthly access amount with USDC on Base. You'll get an address and a unique memo — send, then paste your transaction hash to unlock an API key and webhook delivery. A webhook URL is required so we can deliver your filings.</p>
   <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
     <input id="co-email" type="email" placeholder="you@your-fund.com" style="background:var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; font-size:14px; width:100%;">
     <input id="co-webhook" type="url" placeholder="https://hooks.slack.com/... (delivery endpoint, required)" style="background:var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; font-size:14px; width:100%;">
@@ -131,6 +132,7 @@ a:hover { text-decoration: underline; }
     </div>
   </div>
   <p style="font-size:13px; margin-top:8px;" id="co-msg"></p>
+  <pre id="co-key" style="display:none; margin-top:10px; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; overflow:auto; font-size:12px;"></pre>
 </section>
 
 <section>
@@ -140,22 +142,24 @@ a:hover { text-decoration: underline; }
 
 <section>
   <h2>API</h2>
-  <p><code>GET /api/feed</code> — recent filings JSON</p>
+  <p><code>GET /api/feed</code> — delayed public feed; real-time with <code>Authorization: Bearer ef_live_...</code></p>
+  <p><code>GET /api/realtime</code> — paid API-key real-time feed</p>
   <p><code>POST /api/subscribe</code> — register (body: <code>{email, webhook_url, plan, forms?, tickers?}</code>)</p>
+  <p><code>POST /api/confirm</code> — confirm payment and receive your API key (body: <code>{quote_id, tx_hash}</code>)</p>
   <p><code>GET /api/status</code> — system health</p>
   <p><code>GET /api/subscription/&lt;id&gt;</code> — your subscription status</p>
 </section>
 
 <section>
   <h2>Subscribe</h2>
-  <p>Drop your email + webhook URL — Pro plans activate as soon as Stripe is live. Free tier active immediately.</p>
+  <p>Drop your email + webhook URL. Paid plans return payment details and activate after confirmation. Free tier active immediately with delayed, limited feed access.</p>
   <form onsubmit="event.preventDefault(); subscribeForm()">
     <input id="email-in" type="email" placeholder="you@your-fund.com" required>
-    <input id="webhook-in" type="url" placeholder="https://your-system.example.com/webhook (Pro only)">
+    <input id="webhook-in" type="url" placeholder="https://your-system.example.com/webhook (paid plans)">
     <select id="plan-in" style="background: var(--card); border:1px solid var(--border); color:var(--fg); padding:10px; border-radius:4px; width:100%; margin-bottom:8px;">
-      <option value="free">Free — web feed only</option>
-      <option value="pro">Pro — $99/mo with webhook</option>
-      <option value="institutional">Institutional — $999/mo</option>
+      <option value="free">Free — delayed preview</option>
+      <option value="pro">Pro — $99/mo with API key + webhook</option>
+      <option value="institutional">Institutional — $299/mo</option>
     </select>
     <button type="submit">Subscribe</button>
   </form>
@@ -222,6 +226,9 @@ async function subscribeForm() {
     if (r.ok || r.status === 202) {
       result.textContent = `${data.message || 'Subscribed'} — id: ${data.subscription_id}`;
       result.style.color = 'var(--good)';
+    } else if (r.status === 402) {
+      result.textContent = `Payment required for ${data.plan}: quote ${data.quote_id}. Use the plan card checkout to pay and unlock your API key.`;
+      result.style.color = 'var(--accent)';
     } else {
       result.textContent = `Error: ${data.error}`;
       result.style.color = '#f55';
@@ -236,13 +243,15 @@ let CO = { tier: null, quote_id: null, address: null, confirm_url: '/api/confirm
 
 function upgrade(tier) {
   CO.tier = tier;
-  const price = tier === 'institutional' ? '999' : '99';
+  const price = tier === 'institutional' ? '299' : '99';
   const label = tier.charAt(0).toUpperCase() + tier.slice(1);
   document.getElementById('checkout-title').textContent = `Upgrade to ${label} — $${price}/mo`;
   const sec = document.getElementById('checkout');
   sec.style.display = '';
   document.getElementById('co-quote').style.display = 'none';
   document.getElementById('co-msg').textContent = '';
+  document.getElementById('co-key').style.display = 'none';
+  document.getElementById('co-key').textContent = '';
   sec.scrollIntoView({ behavior: 'smooth' });
   document.getElementById('co-email').focus();
 }
@@ -303,7 +312,16 @@ async function confirmTx() {
       body: JSON.stringify({ quote_id: CO.quote_id, tx_hash: tx })
     });
     const d = await r.json();
-    if (r.ok) { msg.style.color = 'var(--good)'; msg.textContent = `✓ ${CO.tier} unlocked — receipt recorded. Filings will flow to your webhook.`; }
+    if (r.ok) {
+      msg.style.color = 'var(--good)';
+      msg.textContent = `${CO.tier} unlocked through ${d.current_period_end || 'the current billing period'}. Filings will flow to your webhook.`;
+      if (d.api_key) {
+        const keyBox = document.getElementById('co-key');
+        const origin = window.location.origin;
+        keyBox.style.display = '';
+        keyBox.textContent = `API key\n${d.api_key}\n\nReal-time feed\ncurl -H "Authorization: Bearer ${d.api_key}" ${origin}/api/feed\ncurl -H "Authorization: Bearer ${d.api_key}" ${origin}/api/realtime`;
+      }
+    }
     else { msg.style.color = 'var(--accent)'; msg.textContent = d.error || 'payment not verified yet — on-chain confirmation can take a moment, try again shortly'; }
   } catch (e) {
     msg.style.color = 'var(--accent)'; msg.textContent = 'network error — try again';

@@ -5,19 +5,19 @@
  * (material events) get pushed to subscribers via webhook.
  *
  * Subscribers added via POST /api/subscribe (plan = "free" | "pro" | "institutional").
- * Free tier: web feed only.
+ * Free tier: delayed, limited web/API preview.
  * Pro ($99/mo): webhook delivery within 60s of filing.
- * Institutional ($999/mo): SLA + multi-webhook + priority delivery.
+ * Institutional ($299/mo): API-key access + larger ticker watchlists.
  */
+
+type Plan = 'free' | 'pro' | 'institutional';
+type PaidPlan = Exclude<Plan, 'free'>;
 
 interface Env {
   ASSETS: Fetcher;
   EF_STATE: KVNamespace;
   EF_SUBS: KVNamespace;
   USER_AGENT: string;
-  STRIPE_SECRET_KEY?: string;
-  STRIPE_PRICE_ID_PRO?: string;
-  STRIPE_PRICE_ID_INSTITUTIONAL?: string;
   // Shared fleet money rail. PAYRAIL is a service binding (preferred — a direct
   // internal worker→worker call that skips the public edge, so it dodges both the
   // *.workers.dev same-zone restriction and edge bot-management). PAYRAIL_URL is the
@@ -44,26 +44,38 @@ interface Subscription {
   id: string;
   email: string;
   webhook_url?: string;
-  plan: 'free' | 'pro' | 'institutional';
+  plan: Plan;
   forms: string[];        // which forms they want; default ["4","8-K"]
   tickers?: string[];     // optional ticker filter
   created_at: string;
   active: boolean;
+  activated_at?: string;
+  current_period_end?: string;
+  api_key_id?: string;
+  api_key_hash?: string;
+  payment_quote_id?: string;
+  payment_tx_hash?: string;
   delivery_count: number;
   last_delivery_at?: string;
 }
 
 const FORMS_TO_WATCH = ['4', '8-K'];
 const FEED_RECENT_LIMIT = 50;
+const FREE_FEED_LIMIT = 10;
+const FREE_FEED_DELAY_MINUTES = 15;
+const FREE_FEED_DELAY_MS = FREE_FEED_DELAY_MINUTES * 60 * 1000;
+const PAID_PERIOD_DAYS = 31;
 const STATE_KEY_LAST_FILINGS = 'last_seen_filings';
 const FEED_CACHE_KEY = 'feed:recent';
+const API_KEY_PREFIX = 'ef_live';
 
 // === payrail (shared fleet money rail) ===
 // edgarflash plugs into the live payrail Worker instead of re-implementing
-// "Stripe wire pending". payrail returns where to send money + a memo
+// payment-pending plumbing. payrail returns where to send money + a memo
 // (quote_id); the buyer pays on-chain, then /api/confirm records the receipt.
 const PAYRAIL_DEFAULT = 'https://payrail.ivixivi.workers.dev';
-const PRICES: Record<'pro' | 'institutional', string> = { pro: '99', institutional: '999' };
+const PRICES: Record<PaidPlan, string> = { pro: '99', institutional: '299' };
+const TICKER_LIMITS: Record<Plan, number> = { free: 0, pro: 25, institutional: 100 };
 
 interface PayrailQuote {
   quote_id: string;
@@ -88,7 +100,7 @@ function payrailFetch(env: Env, path: string, init?: RequestInit): Promise<Respo
   return fetch(base + path, { ...init, headers });
 }
 
-async function payrailQuote(env: Env, plan: 'pro' | 'institutional'): Promise<PayrailQuote> {
+async function payrailQuote(env: Env, plan: PaidPlan): Promise<PayrailQuote> {
   const qs = new URLSearchParams({
     ship: 'edgarflash',
     sku: `edgarflash:${plan}`,
@@ -111,9 +123,133 @@ async function hmacHex(secret: string, message: string): Promise<string> {
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function isPaidPlan(plan: Plan): plan is PaidPlan {
+  return plan === 'pro' || plan === 'institutional';
+}
+
+function currentPeriodEnd(start = new Date()): string {
+  return new Date(start.getTime() + PAID_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function hasPaidAccess(sub: Subscription): boolean {
+  if (!sub.active || !isPaidPlan(sub.plan)) return false;
+  if (!sub.current_period_end) return true; // legacy active paid subscriptions remain enabled.
+  return Date.parse(sub.current_period_end) > Date.now();
+}
+
+function randomBase64Url(byteLength: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 function newId(prefix = ''): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(9));
-  return prefix + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return prefix + randomBase64Url(9);
+}
+
+function newSecret(): string {
+  return randomBase64Url(24);
+}
+
+async function sha256Hex(message: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function issueApiKey(env: Env, sub: Subscription): Promise<string> {
+  if (sub.api_key_id) await env.EF_SUBS.delete(`api:${sub.api_key_id}`);
+  const keyId = newId('ak_');
+  const apiKey = `${API_KEY_PREFIX}_${keyId}.${newSecret()}`;
+  sub.api_key_id = keyId;
+  sub.api_key_hash = await sha256Hex(apiKey);
+  await env.EF_SUBS.put(`api:${keyId}`, sub.id);
+  return apiKey;
+}
+
+function extractApiKey(req: Request): string | undefined {
+  const headerKey = req.headers.get('x-api-key')?.trim();
+  if (headerKey) return headerKey;
+
+  const auth = req.headers.get('authorization')?.trim();
+  const match = auth?.match(/^Bearer\s+(.+)$/i);
+  if (match?.[1]) return match[1].trim();
+
+  const queryKey = new URL(req.url).searchParams.get('api_key')?.trim();
+  return queryKey || undefined;
+}
+
+function parseApiKey(apiKey: string): { keyId: string } | null {
+  const prefix = `${API_KEY_PREFIX}_`;
+  if (!apiKey.startsWith(prefix)) return null;
+  const rest = apiKey.slice(prefix.length);
+  const dot = rest.indexOf('.');
+  if (dot <= 0 || dot === rest.length - 1) return null;
+  return { keyId: rest.slice(0, dot) };
+}
+
+interface ApiAuthResult {
+  presented: boolean;
+  sub?: Subscription;
+  error?: string;
+  status?: number;
+}
+
+async function authenticateApiKey(req: Request, env: Env): Promise<ApiAuthResult> {
+  const apiKey = extractApiKey(req);
+  if (!apiKey) return { presented: false };
+
+  const parsed = parseApiKey(apiKey);
+  if (!parsed) return { presented: true, error: 'invalid_api_key', status: 401 };
+
+  const subId = await env.EF_SUBS.get(`api:${parsed.keyId}`);
+  if (!subId) return { presented: true, error: 'invalid_api_key', status: 401 };
+
+  const subRaw = await env.EF_SUBS.get(`sub:${subId}`);
+  if (!subRaw) return { presented: true, error: 'subscription_not_found', status: 401 };
+
+  let sub: Subscription;
+  try { sub = JSON.parse(subRaw) as Subscription; }
+  catch { return { presented: true, error: 'subscription_corrupt', status: 500 }; }
+
+  if (!hasPaidAccess(sub)) return { presented: true, error: 'inactive_subscription', status: 403 };
+  if (!sub.api_key_hash) return { presented: true, error: 'api_key_not_enabled', status: 403 };
+
+  const digest = await sha256Hex(apiKey);
+  if (!timingSafeEqualHex(digest, sub.api_key_hash)) return { presented: true, error: 'invalid_api_key', status: 401 };
+
+  return { presented: true, sub };
+}
+
+function apiAuthError(auth: ApiAuthResult, fallback = 'api_key_required'): Response {
+  return Response.json({ error: auth.error ?? fallback }, { status: auth.status ?? 401 });
+}
+
+function freeVisibleFilings(filings: Filing[]): Filing[] {
+  const cutoff = Date.now() - FREE_FEED_DELAY_MS;
+  return filings
+    .filter(f => {
+      const filedAt = Date.parse(f.filed_at);
+      return !Number.isFinite(filedAt) || filedAt <= cutoff;
+    })
+    .slice(0, FREE_FEED_LIMIT);
+}
+
+function normalizeForms(input: unknown): string[] {
+  const requested = Array.isArray(input) ? input.map(String) : FORMS_TO_WATCH;
+  const allowed = new Set(FORMS_TO_WATCH);
+  const forms = requested.map(f => f.trim()).filter(f => allowed.has(f));
+  return [...new Set(forms)];
+}
+
+function normalizeTickers(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return [...new Set(input.map(t => String(t).trim().toUpperCase()).filter(Boolean))];
 }
 
 async function fetchEdgarFilings(form: string, env: Env): Promise<Filing[]> {
@@ -208,7 +344,7 @@ async function listSubscriptions(env: Env): Promise<Subscription[]> {
 }
 
 async function deliverWebhook(sub: Subscription, filings: Filing[], env: Env) {
-  if (!sub.webhook_url || !sub.active) return;
+  if (!sub.webhook_url || !hasPaidAccess(sub)) return;
   // Filter
   let toSend = filings.filter(f => sub.forms.includes(f.form));
   if (sub.tickers && sub.tickers.length > 0) {
@@ -261,12 +397,48 @@ async function runCron(env: Env) {
 // === HTTP handlers ===
 
 async function handleApiFeed(req: Request, env: Env): Promise<Response> {
+  const auth = await authenticateApiKey(req, env);
+  if (auth.presented && !auth.sub) return apiAuthError(auth);
+
+  const filings = await loadRecentFeed(env);
+  if (auth.sub) {
+    return Response.json({
+      tier: auth.sub.plan,
+      realtime: true,
+      subscription_id: auth.sub.id,
+      count: filings.length,
+      filings,
+      updated_at: new Date().toISOString(),
+      note: 'Paid API-key feed — real-time SEC alert cache.',
+    });
+  }
+
+  const delayed = freeVisibleFilings(filings);
+  return Response.json({
+    tier: 'free',
+    realtime: false,
+    delayed_minutes: FREE_FEED_DELAY_MINUTES,
+    limit: FREE_FEED_LIMIT,
+    count: delayed.length,
+    total_cached: filings.length,
+    filings: delayed,
+    updated_at: new Date().toISOString(),
+    note: 'Free tier is delayed and limited. Subscribe to Pro or Institutional for an API key and real-time alerts.',
+  });
+}
+
+async function handleRealtimeFeed(req: Request, env: Env): Promise<Response> {
+  const auth = await authenticateApiKey(req, env);
+  if (!auth.sub) return apiAuthError(auth);
+
   const filings = await loadRecentFeed(env);
   return Response.json({
+    tier: auth.sub.plan,
+    realtime: true,
+    subscription_id: auth.sub.id,
     count: filings.length,
     filings,
     updated_at: new Date().toISOString(),
-    note: 'Free tier — refreshed every 60s. Pro tier delivers within 5–30s via webhook.',
   });
 }
 
@@ -277,18 +449,29 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
 
   const email = String(body?.email ?? '').trim().toLowerCase();
   const webhook_url = body?.webhook_url ? String(body.webhook_url).trim() : undefined;
-  const plan = ['free', 'pro', 'institutional'].includes(body?.plan) ? body.plan : 'free';
-  const forms: string[] = Array.isArray(body?.forms) ? body.forms.map(String) : ['4', '8-K'];
-  const tickers: string[] | undefined = Array.isArray(body?.tickers) ? body.tickers.map(String) : undefined;
+  const requestedPlan = String(body?.plan ?? 'free');
+  const plan: Plan = requestedPlan === 'pro' || requestedPlan === 'institutional' ? requestedPlan : 'free';
+  const forms = normalizeForms(body?.forms);
+  const tickersInput = normalizeTickers(body?.tickers);
+  const tickerLimit = TICKER_LIMITS[plan];
 
   if (!email || !email.includes('@')) return Response.json({ error: 'valid email required' }, { status: 400 });
-  if (plan !== 'free' && !webhook_url) {
+  if (forms.length === 0) return Response.json({ error: `forms must include one of: ${FORMS_TO_WATCH.join(', ')}` }, { status: 400 });
+  if (tickersInput.length > tickerLimit) {
+    return Response.json({ error: `${plan} plan allows up to ${tickerLimit} ticker filters` }, { status: 400 });
+  }
+  if (isPaidPlan(plan) && !webhook_url) {
     return Response.json({ error: 'paid plans require webhook_url' }, { status: 400 });
   }
 
   const id = newId('s_');
   const sub: Subscription = {
-    id, email, webhook_url, plan, forms, tickers,
+    id,
+    email,
+    webhook_url: isPaidPlan(plan) ? webhook_url : undefined,
+    plan,
+    forms,
+    tickers: tickersInput.length > 0 ? tickersInput : undefined,
     created_at: new Date().toISOString(),
     active: plan === 'free',  // paid plans wait for payment confirmation
     delivery_count: 0,
@@ -296,18 +479,25 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   await env.EF_SUBS.put(`sub:${id}`, JSON.stringify(sub));
 
   if (plan === 'free') {
-    return Response.json({ subscription_id: id, status: 'active', plan, message: 'Free tier active. View feed at /api/feed.' });
+    return Response.json({
+      subscription_id: id,
+      status: 'active',
+      plan,
+      ticker_limit: tickerLimit,
+      message: `Free tier active. /api/feed is delayed ${FREE_FEED_DELAY_MINUTES} minutes and limited to ${FREE_FEED_LIMIT} filings.`,
+    });
   }
 
   // Paid plan: get a live quote from the shared payrail rail and return a 402
   // carrying the on-chain address + memo (quote_id). The subscription is already
   // persisted with active=false; the buyer pays, then POSTs the tx hash to
-  // /api/confirm to unlock. No more "Stripe wire pending" stub.
-  const paidPlan = plan as 'pro' | 'institutional';
+  // /api/confirm to unlock. No payment-pending stub.
+  const paidPlan = plan;
   let q: PayrailQuote;
   try {
     q = await payrailQuote(env, paidPlan);
   } catch (err) {
+    await env.EF_SUBS.delete(`sub:${id}`);
     return Response.json({ error: 'rail_unavailable', detail: String(err) }, { status: 502 });
   }
   await env.EF_SUBS.put(
@@ -318,6 +508,8 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
   return Response.json({
     status: 'payment_required',
     plan: paidPlan,
+    amount_usd: PRICES[paidPlan],
+    ticker_limit: tickerLimit,
     subscription_id: id,
     quote_id: q.quote_id,
     pay_to: q.pay_to,
@@ -330,7 +522,7 @@ async function handleSubscribe(req: Request, env: Env): Promise<Response> {
 
 // A buyer who paid posts { quote_id, tx_hash }. We forward it to payrail
 // /receipt — the receipt's payer_ref == tx_hash is the TIER-1 artifact — then
-// flip the pending sub to active and unlock the paid plan.
+// flip the pending sub to active, then issue the real-time API key.
 async function handleConfirm(req: Request, env: Env): Promise<Response> {
   if (req.method !== 'POST') return new Response('POST only', { status: 405 });
   const body = await req.json().catch(() => null) as { quote_id?: string; tx_hash?: string } | null;
@@ -339,8 +531,8 @@ async function handleConfirm(req: Request, env: Env): Promise<Response> {
   }
   const pendingRaw = await env.EF_SUBS.get(`pending:${body.quote_id}`);
   if (!pendingRaw) return Response.json({ error: 'quote_not_found_or_expired' }, { status: 404 });
-  const pending = JSON.parse(pendingRaw) as { quote_id: string; subscription_id: string; plan: 'pro' | 'institutional' };
-  const plan = (pending.plan === 'institutional' ? 'institutional' : 'pro') as 'pro' | 'institutional';
+  const pending = JSON.parse(pendingRaw) as { quote_id: string; subscription_id: string; plan: PaidPlan };
+  const plan: PaidPlan = pending.plan === 'institutional' ? 'institutional' : 'pro';
 
   const payload = JSON.stringify({
     quote_id: body.quote_id,
@@ -366,9 +558,24 @@ async function handleConfirm(req: Request, env: Env): Promise<Response> {
   if (!subRaw) return Response.json({ error: 'subscription_not_found' }, { status: 404 });
   const sub = JSON.parse(subRaw) as Subscription;
   sub.active = true;
+  sub.activated_at = new Date().toISOString();
+  sub.current_period_end = currentPeriodEnd();
+  sub.payment_quote_id = body.quote_id;
+  sub.payment_tx_hash = body.tx_hash;
+  const apiKey = sub.api_key_hash && sub.api_key_id ? undefined : await issueApiKey(env, sub);
   await env.EF_SUBS.put(`sub:${pending.subscription_id}`, JSON.stringify(sub));
   await env.EF_SUBS.delete(`pending:${body.quote_id}`);
-  return Response.json({ status: 'active', subscription_id: pending.subscription_id });
+  return Response.json({
+    status: 'active',
+    subscription_id: pending.subscription_id,
+    plan: sub.plan,
+    current_period_end: sub.current_period_end,
+    api_key: apiKey,
+    api_key_id: sub.api_key_id,
+    api_key_note: apiKey ? 'Store this key now; it is only returned on activation.' : 'API key was already issued.',
+    realtime_feed_url: '/api/feed',
+    realtime_endpoint: '/api/realtime',
+  });
 }
 
 // Poll payment status by proxying payrail's public receipt lookup.
@@ -391,11 +598,15 @@ async function handleSubscription(req: Request, env: Env, id: string): Promise<R
     id: sub.id,
     plan: sub.plan,
     active: sub.active,
+    realtime_api: hasPaidAccess(sub),
+    api_key_id: sub.api_key_id,
     forms: sub.forms,
     tickers: sub.tickers,
     delivery_count: sub.delivery_count,
     last_delivery_at: sub.last_delivery_at,
     created_at: sub.created_at,
+    activated_at: sub.activated_at,
+    current_period_end: sub.current_period_end,
   });
 }
 
@@ -411,6 +622,14 @@ async function handleStatus(_req: Request, env: Env): Promise<Response> {
       pro: subs.filter(s => s.plan === 'pro').length,
       institutional: subs.filter(s => s.plan === 'institutional').length,
     },
+    active_paid_subscriber_count: subs.filter(hasPaidAccess).length,
+    free_feed: {
+      delayed_minutes: FREE_FEED_DELAY_MINUTES,
+      limit: FREE_FEED_LIMIT,
+    },
+    plan_limits: {
+      ticker_filters: TICKER_LIMITS,
+    },
     last_filing: recent[0]?.filed_at ?? null,
   });
 }
@@ -419,6 +638,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/api/feed') return handleApiFeed(req, env);
+    if (url.pathname === '/api/realtime') return handleRealtimeFeed(req, env);
     if (url.pathname === '/api/subscribe') return handleSubscribe(req, env);
     if (url.pathname === '/api/confirm') return handleConfirm(req, env);
     if (url.pathname === '/api/pay-status') return handlePayStatus(req, env);
