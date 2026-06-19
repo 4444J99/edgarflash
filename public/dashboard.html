@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgarFlash — Dashboard</title>
+<meta name="description" content="Dashboard and status metrics for EdgarFlash.">
+<style>
+:root {
+  --bg: #0a0e14;
+  --fg: #e8eef5;
+  --muted: #7a8898;
+  --accent: #ff6b35;
+  --good: #4ade80;
+  --card: #131a23;
+  --border: #1f2937;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: -apple-system, system-ui, sans-serif; line-height: 1.6; padding: 32px 16px; max-width: 900px; margin: 0 auto; }
+header { text-align: center; padding: 24px 0 32px; border-bottom: 1px solid var(--border); margin-bottom: 32px; }
+h1 { font-size: 32px; letter-spacing: -0.03em; }
+h1 .flash { color: var(--accent); }
+.tagline { color: var(--muted); font-size: 16px; margin-top: 8px; }
+.dashboard-grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 32px; }
+.metric-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 24px; text-align: center; transition: transform 0.2s, box-shadow 0.2s; }
+.metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); border-color: var(--muted); }
+.metric-value { font-size: 36px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
+.metric-label { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.details-grid { display: grid; gap: 20px; grid-template-columns: 1fr; }
+@media (min-width: 600px) { .details-grid { grid-template-columns: 1fr 1fr; } }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.panel h2 { font-size: 18px; margin-bottom: 16px; color: var(--fg); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 14px; }
+.stat-row:last-child { border-bottom: none; }
+.stat-label { color: var(--muted); }
+.stat-val { font-family: ui-monospace, monospace; font-weight: 600; }
+.good { color: var(--good); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+footer { text-align: center; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 36px; }
+.loading { text-align: center; color: var(--muted); padding: 40px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Edgar<span class="flash">Flash</span> Dashboard</h1>
+  <p class="tagline">System metrics, subscriber counts, and feed status.</p>
+</header>
+
+<div id="content">
+  <div class="loading" id="loading-msg">Loading live metrics...</div>
+  <div id="dashboard" style="display: none;">
+    <div class="dashboard-grid">
+      <div class="metric-card">
+        <div class="metric-value" id="m-subs">0</div>
+        <div class="metric-label">Total Subscribers</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value good" id="m-paid">0</div>
+        <div class="metric-label">Active Paid</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-feed">0</div>
+        <div class="metric-label">Recent Filings</div>
+      </div>
+    </div>
+
+    <div class="details-grid">
+      <div class="panel">
+        <h2>Subscribers Breakdown</h2>
+        <div class="stat-row"><span class="stat-label">Institutional</span><span class="stat-val" id="s-inst">0</span></div>
+        <div class="stat-row"><span class="stat-label">Pro</span><span class="stat-val" id="s-pro">0</span></div>
+        <div class="stat-row"><span class="stat-label">Free</span><span class="stat-val" id="s-free">0</span></div>
+        <div class="stat-row" style="margin-top: 12px;"><span class="stat-label">Total Paid (Active)</span><span class="stat-val good" id="s-paid">0</span></div>
+      </div>
+
+      <div class="panel">
+        <h2>System Status</h2>
+        <div class="stat-row"><span class="stat-label">System Name</span><span class="stat-val" id="sys-name">-</span></div>
+        <div class="stat-row"><span class="stat-label">Free Tier Delay</span><span class="stat-val" id="sys-delay">-</span></div>
+        <div class="stat-row"><span class="stat-label">Last Filing Seen</span><span class="stat-val" id="sys-last">-</span></div>
+        <div class="stat-row"><span class="stat-label">Last Updated</span><span class="stat-val" id="sys-updated">-</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p><a href="/">← Back to Home</a></p>
+</footer>
+
+<script>
+async function loadDashboard() {
+  try {
+    const r = await fetch("/api/status");
+    if (!r.ok) throw new Error("Failed to fetch status");
+    const data = await r.json();
+    
+    // Top cards
+    document.getElementById("m-subs").textContent = data.subscriber_count;
+    document.getElementById("m-paid").textContent = data.active_paid_subscriber_count;
+    document.getElementById("m-feed").textContent = data.feed_size;
+
+    // Breakdown
+    document.getElementById("s-inst").textContent = data.subscriber_breakdown.institutional;
+    document.getElementById("s-pro").textContent = data.subscriber_breakdown.pro;
+    document.getElementById("s-free").textContent = data.subscriber_breakdown.free;
+    document.getElementById("s-paid").textContent = data.active_paid_subscriber_count;
+
+    // System
+    document.getElementById("sys-name").textContent = data.name;
+    document.getElementById("sys-delay").textContent = data.free_feed.delayed_minutes + " min";
+    
+    let lastTime = "None";
+    if (data.last_filing) {
+      const dt = new Date(data.last_filing);
+      lastTime = dt.toLocaleString();
+    }
+    document.getElementById("sys-last").textContent = lastTime;
+    document.getElementById("sys-updated").textContent = new Date().toLocaleTimeString();
+
+    // Show dashboard
+    document.getElementById("loading-msg").style.display = "none";
+    document.getElementById("dashboard").style.display = "block";
+  } catch (e) {
+    document.getElementById("loading-msg").textContent = "Error loading dashboard metrics: " + e.message;
+  }
+}
+
+loadDashboard();
+setInterval(loadDashboard, 15000); // refresh every 15s
+</script>
+</body>
+</html>
