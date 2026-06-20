@@ -150,65 +150,6 @@ test('validates and persists free subscriptions without exposing secrets', async
   assert.equal('api_key_hash' in sub, false);
 });
 
-test('rejects malformed subscription input and returns request ids', async () => {
-  const { env } = createEnv();
-
-  const invalidJson = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    headers: { 'x-request-id': 'req-test-1' },
-    body: '{',
-  }), env as any);
-  assert.equal(invalidJson.status, 400);
-  assert.equal(invalidJson.headers.get('x-request-id'), 'req-test-1');
-  assert.deepEqual(await json(invalidJson), { error: 'invalid JSON' });
-
-  const nonObject = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify([]),
-  }), env as any);
-  assert.equal(nonObject.status, 400);
-  assert.deepEqual(await json(nonObject), { error: 'JSON object required' });
-
-  const badPlan = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({ email: 'person@example.com', plan: 'enterprise' }),
-  }), env as any);
-  assert.equal(badPlan.status, 400);
-  assert.deepEqual(await json(badPlan), { error: 'plan must be one of: free, pro, institutional' });
-
-  const badFormsShape = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({ email: 'person@example.com', forms: '4' }),
-  }), env as any);
-  assert.equal(badFormsShape.status, 400);
-  assert.deepEqual(await json(badFormsShape), { error: 'forms must be an array of strings' });
-
-  const insecureWebhook = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({
-      email: 'person@example.com',
-      plan: 'pro',
-      webhook_url: 'http://hooks.example/pro',
-    }),
-  }), env as any);
-  assert.equal(insecureWebhook.status, 400);
-  assert.deepEqual(await json(insecureWebhook), { error: 'webhook_url must be a valid HTTPS URL' });
-
-  const invalidTicker = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({
-      email: 'person@example.com',
-      plan: 'pro',
-      webhook_url: 'https://hooks.example/pro',
-      tickers: ['BAD TICKER'],
-    }),
-  }), env as any);
-  assert.equal(invalidTicker.status, 400);
-  assert.deepEqual(await json(invalidTicker), {
-    error: 'tickers must be 1-12 characters using letters, numbers, dot, or hyphen',
-  });
-});
-
 test('runs paid checkout, confirmation, API-key auth, and realtime feeds', async () => {
   const payrailCalls: Array<{
     url: string;
@@ -355,69 +296,6 @@ test('runs paid checkout, confirmation, API-key auth, and realtime feeds', async
   assert.equal(payrailCalls.length, 2);
 });
 
-test('sanitizes upstream failures and unexpected API errors', async () => {
-  const payrailThrows = {
-    fetch: async () => {
-      throw new Error('upstream secret detail');
-    },
-  };
-  const { env } = createEnv({ PAYRAIL: payrailThrows });
-
-  const checkout = await worker.fetch(req('/api/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({
-      email: 'paid@example.com',
-      webhook_url: 'https://hooks.example/pro',
-      plan: 'pro',
-    }),
-  }), env as any);
-  assert.equal(checkout.status, 502);
-  assert.deepEqual(await json(checkout), { error: 'rail_unavailable' });
-  assert.deepEqual(await env.EF_SUBS.list({ prefix: 'sub:' }), { keys: [] });
-
-  await env.EF_SUBS.put('pending:quote_pro_1', JSON.stringify({
-    quote_id: 'quote_pro_1',
-    subscription_id: 's_paid',
-    plan: 'pro',
-  }));
-  await env.EF_SUBS.put('sub:s_paid', JSON.stringify({
-    id: 's_paid',
-    email: 'paid@example.com',
-    webhook_url: 'https://hooks.example/pro',
-    plan: 'pro',
-    forms: ['4'],
-    created_at: new Date().toISOString(),
-    active: false,
-    delivery_count: 0,
-  }));
-
-  const confirm = await worker.fetch(req('/api/confirm', {
-    method: 'POST',
-    body: JSON.stringify({ quote_id: 'quote_pro_1', tx_hash: '0xpaid' }),
-  }), env as any);
-  assert.equal(confirm.status, 502);
-  assert.deepEqual(await json(confirm), { error: 'receipt_unavailable' });
-
-  const status = await worker.fetch(req('/api/pay-status?quote_id=quote_pro_1'), env as any);
-  assert.equal(status.status, 502);
-  assert.deepEqual(await json(status), { error: 'status_unavailable' });
-
-  const brokenState = {
-    get: async () => {
-      throw new Error('kv secret detail');
-    },
-    put: async () => undefined,
-    delete: async () => undefined,
-    list: async () => ({ keys: [] }),
-  };
-  const { env: brokenEnv } = createEnv({ EF_STATE: brokenState });
-  const safe500 = await worker.fetch(req('/api/feed', {
-    headers: { 'x-request-id': 'req-safe-500' },
-  }), brokenEnv as any);
-  assert.equal(safe500.status, 500);
-  assert.deepEqual(await json(safe500), { error: 'internal_error', request_id: 'req-safe-500' });
-});
-
 test('proxies pay status responses from payrail', async () => {
   const payrail = {
     fetch: async (request: Request) => {
@@ -525,50 +403,6 @@ test('scheduled polling parses EDGAR Atom, updates caches, dedupes, and delivers
   assert.equal(webhookBodies.length, 1);
   const dedupedSub = JSON.parse(await env.EF_SUBS.get('sub:s_paid'));
   assert.equal(dedupedSub.delivery_count, 1);
-});
-
-test('scheduled webhook delivery does not count failed webhook responses', async () => {
-  const { env } = createEnv();
-  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  await env.EF_SUBS.put('sub:s_paid', JSON.stringify({
-    id: 's_paid',
-    email: 'paid@example.com',
-    webhook_url: 'https://hooks.example/sec',
-    plan: 'pro',
-    forms: ['4'],
-    created_at: new Date().toISOString(),
-    active: true,
-    current_period_end: future,
-    delivery_count: 0,
-  }));
-
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    const url = new URL(request.url);
-
-    if (url.hostname === 'www.sec.gov') {
-      const form = url.searchParams.get('type');
-      if (form === '4') {
-        return new Response(atomFeed([atomEntry({
-          id: 'filing-4-failed-hook',
-          title: '4 - ACME HOLDINGS INC (0001234567) (Filer)',
-          updated: '2026-06-19T10:00:00Z',
-          href: 'https://www.sec.gov/Archives/edgar/data/1234567/4.html',
-          summary: 'owner transaction filed',
-        })]), { status: 200 });
-      }
-      return new Response(atomFeed([]), { status: 200 });
-    }
-
-    if (url.href === 'https://hooks.example/sec') return new Response('down', { status: 500 });
-    throw new Error(`unexpected fetch ${request.url}`);
-  };
-
-  await runScheduled(env);
-
-  const deliveredSub = JSON.parse(await env.EF_SUBS.get('sub:s_paid'));
-  assert.equal(deliveredSub.delivery_count, 0);
-  assert.equal(deliveredSub.last_delivery_at, undefined);
 });
 
 async function runScheduled(env: any) {

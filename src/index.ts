@@ -76,30 +76,6 @@ const API_KEY_PREFIX = 'ef_live';
 const PAYRAIL_DEFAULT = 'https://payrail.ivixivi.workers.dev';
 const PRICES: Record<PaidPlan, string> = { pro: '99', institutional: '299' };
 const TICKER_LIMITS: Record<Plan, number> = { free: 0, pro: 25, institutional: 100 };
-const MAX_JSON_BODY_BYTES = 16 * 1024;
-const MAX_EMAIL_LENGTH = 254;
-const MAX_WEBHOOK_URL_LENGTH = 2048;
-const MAX_TOKEN_LENGTH = 256;
-const SAFE_TOKEN_RE = /^[a-zA-Z0-9._:-]+$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const TICKER_RE = /^[A-Z0-9][A-Z0-9.-]{0,11}$/;
-
-type LogValue = string | number | boolean | null | undefined;
-type LogFields = Record<string, LogValue>;
-
-interface RequestContext {
-  requestId: string;
-  method: string;
-  path: string;
-}
-
-type JsonObjectResult =
-  | { ok: true; value: Record<string, unknown> }
-  | { ok: false; response: Response };
-
-type ValidationResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; response: Response };
 
 interface PayrailQuote {
   quote_id: string;
@@ -107,145 +83,6 @@ interface PayrailQuote {
   checkout: string | null;
   instructions: string;
   expires_in_seconds: number;
-}
-
-function logEvent(level: 'info' | 'warn' | 'error', event: string, fields: LogFields = {}): void {
-  const record: Record<string, LogValue> = {
-    level,
-    event,
-    ts: new Date().toISOString(),
-  };
-  for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) record[key] = value;
-  }
-  const line = JSON.stringify(record);
-  if (level === 'error') console.error(line);
-  else if (level === 'warn') console.warn(line);
-  else console.log(line);
-}
-
-function errorFields(err: unknown): LogFields {
-  if (err instanceof Error) {
-    return {
-      error_name: err.name,
-      error_message: err.message,
-    };
-  }
-  return { error_message: String(err) };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function jsonError(error: string, status = 400, extra?: Record<string, unknown>): Response {
-  return Response.json({ error, ...extra }, { status });
-}
-
-function methodNotAllowed(methods: string[]): Response {
-  return Response.json(
-    { error: 'method_not_allowed' },
-    { status: 405, headers: { Allow: methods.join(', ') } },
-  );
-}
-
-function isSafeToken(value: string, maxLength = MAX_TOKEN_LENGTH): boolean {
-  return value.length > 0 && value.length <= maxLength && SAFE_TOKEN_RE.test(value);
-}
-
-function isValidEmail(email: string): boolean {
-  return email.length <= MAX_EMAIL_LENGTH && EMAIL_RE.test(email);
-}
-
-function normalizeRequestId(req: Request): string {
-  const incoming = req.headers.get('x-request-id')?.trim() || req.headers.get('cf-ray')?.trim();
-  if (incoming && isSafeToken(incoming, 128)) return incoming;
-  return newId('req_');
-}
-
-function withRequestId(response: Response, requestId: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set('x-request-id', requestId);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-async function readJsonObject(req: Request, maxBytes = MAX_JSON_BODY_BYTES): Promise<JsonObjectResult> {
-  const contentLength = req.headers.get('content-length');
-  if (contentLength) {
-    const declaredLength = Number(contentLength);
-    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-      return { ok: false, response: jsonError('payload_too_large', 413) };
-    }
-  }
-
-  let raw: string;
-  try {
-    raw = await req.text();
-  } catch {
-    return { ok: false, response: jsonError('request_body_unreadable', 400) };
-  }
-
-  if (new TextEncoder().encode(raw).byteLength > maxBytes) {
-    return { ok: false, response: jsonError('payload_too_large', 413) };
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return { ok: false, response: jsonError('invalid JSON', 400) };
-  }
-
-  if (!isRecord(value)) return { ok: false, response: jsonError('JSON object required', 400) };
-  return { ok: true, value };
-}
-
-function normalizeWebhookUrl(input: unknown): ValidationResult<string | undefined> {
-  if (input === undefined || input === null) return { ok: true, value: undefined };
-  if (typeof input !== 'string') return { ok: false, response: jsonError('webhook_url must be a valid HTTPS URL', 400) };
-
-  const trimmed = input.trim();
-  if (!trimmed) return { ok: true, value: undefined };
-  if (trimmed.length > MAX_WEBHOOK_URL_LENGTH) {
-    return { ok: false, response: jsonError('webhook_url must be a valid HTTPS URL', 400) };
-  }
-
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
-      return { ok: false, response: jsonError('webhook_url must be a valid HTTPS URL', 400) };
-    }
-    return { ok: true, value: url.href };
-  } catch {
-    return { ok: false, response: jsonError('webhook_url must be a valid HTTPS URL', 400) };
-  }
-}
-
-function normalizeStringArrayField(input: unknown, field: string): ValidationResult<string[] | undefined> {
-  if (input === undefined) return { ok: true, value: undefined };
-  if (!Array.isArray(input) || !input.every(item => typeof item === 'string')) {
-    return { ok: false, response: jsonError(`${field} must be an array of strings`, 400) };
-  }
-  return { ok: true, value: input };
-}
-
-function normalizePayrailPayTo(input: unknown): PayrailQuote['pay_to'] {
-  if (!isRecord(input)) return null;
-  const { rail, chain, asset, address, amount } = input;
-  if (
-    typeof rail !== 'string' ||
-    typeof chain !== 'string' ||
-    typeof asset !== 'string' ||
-    typeof address !== 'string' ||
-    typeof amount !== 'string'
-  ) {
-    return null;
-  }
-  return { rail, chain, asset, address, amount };
 }
 
 // Single egress point to payrail. Prefers the service binding (an internal
@@ -272,17 +109,7 @@ async function payrailQuote(env: Env, plan: PaidPlan): Promise<PayrailQuote> {
   });
   const r = await payrailFetch(env, `/pay?${qs.toString()}`);
   if (!r.ok) throw new Error(`payrail /pay ${r.status}`);
-  const quote: unknown = await r.json();
-  if (!isRecord(quote) || typeof quote.quote_id !== 'string' || !isSafeToken(quote.quote_id, 128)) {
-    throw new Error('payrail /pay returned invalid quote');
-  }
-  return {
-    quote_id: quote.quote_id,
-    pay_to: normalizePayrailPayTo(quote.pay_to),
-    checkout: typeof quote.checkout === 'string' ? quote.checkout : null,
-    instructions: typeof quote.instructions === 'string' ? quote.instructions : '',
-    expires_in_seconds: typeof quote.expires_in_seconds === 'number' ? quote.expires_in_seconds : 0,
-  };
+  return r.json();
 }
 
 // HMAC-SHA256 hex, byte-identical to payrail's hmac() so timingSafeEqual passes.
@@ -485,14 +312,7 @@ export function stripHtml(s: string): string {
 async function loadLastSeen(env: Env): Promise<Set<string>> {
   const raw = await env.EF_STATE.get(STATE_KEY_LAST_FILINGS);
   if (!raw) return new Set();
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error('last_seen_filings is not an array');
-    return new Set(parsed.filter((id): id is string => typeof id === 'string'));
-  } catch (err) {
-    logEvent('warn', 'kv_json_corrupt', { key: STATE_KEY_LAST_FILINGS, ...errorFields(err) });
-    return new Set();
-  }
+  try { return new Set(JSON.parse(raw) as string[]); } catch { return new Set(); }
 }
 
 async function saveLastSeen(env: Env, ids: Set<string>) {
@@ -504,21 +324,7 @@ async function saveLastSeen(env: Env, ids: Set<string>) {
 async function loadRecentFeed(env: Env): Promise<Filing[]> {
   const raw = await env.EF_STATE.get(FEED_CACHE_KEY);
   if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error('feed:recent is not an array');
-    return parsed.filter((filing): filing is Filing => (
-      isRecord(filing) &&
-      typeof filing.id === 'string' &&
-      typeof filing.form === 'string' &&
-      typeof filing.filed_at === 'string' &&
-      typeof filing.title === 'string' &&
-      typeof filing.url === 'string'
-    ));
-  } catch (err) {
-    logEvent('warn', 'kv_json_corrupt', { key: FEED_CACHE_KEY, ...errorFields(err) });
-    return [];
-  }
+  try { return JSON.parse(raw) as Filing[]; } catch { return []; }
 }
 
 async function saveRecentFeed(env: Env, filings: Filing[]) {
@@ -532,25 +338,13 @@ async function listSubscriptions(env: Env): Promise<Subscription[]> {
   for (const k of list.keys) {
     const v = await env.EF_SUBS.get(k.name);
     if (!v) continue;
-    try {
-      const sub = JSON.parse(v) as Subscription;
-      if (!sub.id || !sub.email || !Array.isArray(sub.forms)) throw new Error('invalid subscription shape');
-      out.push(sub);
-    } catch (err) {
-      logEvent('warn', 'kv_json_corrupt', { key: k.name, ...errorFields(err) });
-    }
+    try { out.push(JSON.parse(v) as Subscription); } catch {}
   }
   return out;
 }
 
 async function deliverWebhook(sub: Subscription, filings: Filing[], env: Env) {
   if (!sub.webhook_url || !hasPaidAccess(sub)) return;
-  const webhook = normalizeWebhookUrl(sub.webhook_url);
-  if (!webhook.ok || !webhook.value) {
-    logEvent('warn', 'webhook_url_invalid', { subscription_id: sub.id });
-    return;
-  }
-
   // Filter
   let toSend = filings.filter(f => sub.forms.includes(f.form));
   if (sub.tickers && sub.tickers.length > 0) {
@@ -560,47 +354,26 @@ async function deliverWebhook(sub: Subscription, filings: Filing[], env: Env) {
   if (toSend.length === 0) return;
 
   try {
-    const response = await fetch(webhook.value, {
+    await fetch(sub.webhook_url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'EdgarFlash/0.1' },
       body: JSON.stringify({ filings: toSend, subscription_id: sub.id }),
     });
-    if (!response.ok) {
-      logEvent('warn', 'webhook_delivery_failed', {
-        subscription_id: sub.id,
-        status: response.status,
-        filing_count: toSend.length,
-      });
-      return;
-    }
     sub.delivery_count = (sub.delivery_count ?? 0) + 1;
     sub.last_delivery_at = new Date().toISOString();
     await env.EF_SUBS.put(`sub:${sub.id}`, JSON.stringify(sub));
-    logEvent('info', 'webhook_delivered', {
-      subscription_id: sub.id,
-      status: response.status,
-      filing_count: toSend.length,
-    });
-  } catch (err) {
-    logEvent('warn', 'webhook_delivery_error', {
-      subscription_id: sub.id,
-      filing_count: toSend.length,
-      ...errorFields(err),
-    });
+  } catch {
+    // fail-silent: subscriber's webhook went down. Don't lose the run.
   }
 }
 
 async function runCron(env: Env) {
-  const startedAt = Date.now();
   const lastSeen = await loadLastSeen(env);
   const newFilings: Filing[] = [];
   for (const form of FORMS_TO_WATCH) {
     let filings: Filing[];
     try { filings = await fetchEdgarFilings(form, env); }
-    catch (err) {
-      logEvent('warn', 'edgar_fetch_failed', { form, ...errorFields(err) });
-      continue;
-    }
+    catch (err) { console.warn(`fetch ${form} failed:`, err); continue; }
     for (const f of filings) {
       if (!lastSeen.has(f.id)) {
         newFilings.push(f);
@@ -608,13 +381,7 @@ async function runCron(env: Env) {
       }
     }
   }
-  if (newFilings.length === 0) {
-    logEvent('info', 'cron_completed', {
-      new_filing_count: 0,
-      duration_ms: Date.now() - startedAt,
-    });
-    return;
-  }
+  if (newFilings.length === 0) return;
 
   // Update feed cache
   const recent = await loadRecentFeed(env);
@@ -625,27 +392,13 @@ async function runCron(env: Env) {
   // Notify subscribers
   const subs = await listSubscriptions(env);
   await Promise.all(subs.map(s => deliverWebhook(s, newFilings, env)));
-  logEvent('info', 'cron_completed', {
-    new_filing_count: newFilings.length,
-    subscriber_count: subs.length,
-    duration_ms: Date.now() - startedAt,
-  });
 }
 
 // === HTTP handlers ===
 
-async function handleApiFeed(req: Request, env: Env, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'GET') return methodNotAllowed(['GET']);
+async function handleApiFeed(req: Request, env: Env): Promise<Response> {
   const auth = await authenticateApiKey(req, env);
-  if (auth.presented && !auth.sub) {
-    logEvent('warn', 'api_auth_failed', {
-      request_id: ctx.requestId,
-      path: ctx.path,
-      reason: auth.error ?? 'api_key_required',
-      status: auth.status ?? 401,
-    });
-    return apiAuthError(auth);
-  }
+  if (auth.presented && !auth.sub) return apiAuthError(auth);
 
   const filings = await loadRecentFeed(env);
   if (auth.sub) {
@@ -674,18 +427,9 @@ async function handleApiFeed(req: Request, env: Env, ctx: RequestContext): Promi
   });
 }
 
-async function handleRealtimeFeed(req: Request, env: Env, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'GET') return methodNotAllowed(['GET']);
+async function handleRealtimeFeed(req: Request, env: Env): Promise<Response> {
   const auth = await authenticateApiKey(req, env);
-  if (!auth.sub) {
-    logEvent('warn', 'api_auth_failed', {
-      request_id: ctx.requestId,
-      path: ctx.path,
-      reason: auth.error ?? 'api_key_required',
-      status: auth.status ?? 401,
-    });
-    return apiAuthError(auth);
-  }
+  if (!auth.sub) return apiAuthError(auth);
 
   const filings = await loadRecentFeed(env);
   return Response.json({
@@ -698,45 +442,26 @@ async function handleRealtimeFeed(req: Request, env: Env, ctx: RequestContext): 
   });
 }
 
-async function handleSubscribe(req: Request, env: Env, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'POST') return methodNotAllowed(['POST']);
-  const parsed = await readJsonObject(req);
-  if (!parsed.ok) return parsed.response;
+async function handleSubscribe(req: Request, env: Env): Promise<Response> {
+  if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+  let body: any;
+  try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON' }, { status: 400 }); }
 
-  const body = parsed.value;
-  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-  const webhookResult = normalizeWebhookUrl(body.webhook_url);
-  if (!webhookResult.ok) return webhookResult.response;
-
-  const requestedPlan = body.plan ?? 'free';
-  if (typeof requestedPlan !== 'string') {
-    return jsonError('plan must be one of: free, pro, institutional', 400);
-  }
-  if (requestedPlan !== 'free' && requestedPlan !== 'pro' && requestedPlan !== 'institutional') {
-    return jsonError('plan must be one of: free, pro, institutional', 400);
-  }
-
-  const formsResult = normalizeStringArrayField(body.forms, 'forms');
-  if (!formsResult.ok) return formsResult.response;
-  const tickersResult = normalizeStringArrayField(body.tickers, 'tickers');
-  if (!tickersResult.ok) return tickersResult.response;
-
-  const plan: Plan = requestedPlan;
-  const webhook_url = webhookResult.value;
-  const forms = normalizeForms(formsResult.value);
-  const tickersInput = normalizeTickers(tickersResult.value);
+  const email = String(body?.email ?? '').trim().toLowerCase();
+  const webhook_url = body?.webhook_url ? String(body.webhook_url).trim() : undefined;
+  const requestedPlan = String(body?.plan ?? 'free');
+  const plan: Plan = requestedPlan === 'pro' || requestedPlan === 'institutional' ? requestedPlan : 'free';
+  const forms = normalizeForms(body?.forms);
+  const tickersInput = normalizeTickers(body?.tickers);
   const tickerLimit = TICKER_LIMITS[plan];
 
-  if (!isValidEmail(email)) return jsonError('valid email required', 400);
-  if (forms.length === 0) return jsonError(`forms must include one of: ${FORMS_TO_WATCH.join(', ')}`, 400);
-  if (tickersInput.some(ticker => !TICKER_RE.test(ticker))) {
-    return jsonError('tickers must be 1-12 characters using letters, numbers, dot, or hyphen', 400);
-  }
+  if (!email || !email.includes('@')) return Response.json({ error: 'valid email required' }, { status: 400 });
+  if (forms.length === 0) return Response.json({ error: `forms must include one of: ${FORMS_TO_WATCH.join(', ')}` }, { status: 400 });
   if (tickersInput.length > tickerLimit) {
-    return jsonError(`${plan} plan allows up to ${tickerLimit} ticker filters`, 400);
+    return Response.json({ error: `${plan} plan allows up to ${tickerLimit} ticker filters` }, { status: 400 });
   }
   if (isPaidPlan(plan) && !webhook_url) {
-    return jsonError('paid plans require webhook_url', 400);
+    return Response.json({ error: 'paid plans require webhook_url' }, { status: 400 });
   }
 
   const id = newId('s_');
@@ -752,14 +477,6 @@ async function handleSubscribe(req: Request, env: Env, ctx: RequestContext): Pro
     delivery_count: 0,
   };
   await env.EF_SUBS.put(`sub:${id}`, JSON.stringify(sub));
-  logEvent('info', 'subscription_created', {
-    request_id: ctx.requestId,
-    subscription_id: id,
-    plan,
-    active: sub.active,
-    form_count: forms.length,
-    ticker_count: tickersInput.length,
-  });
 
   if (plan === 'free') {
     return Response.json({
@@ -781,13 +498,7 @@ async function handleSubscribe(req: Request, env: Env, ctx: RequestContext): Pro
     q = await payrailQuote(env, paidPlan);
   } catch (err) {
     await env.EF_SUBS.delete(`sub:${id}`);
-    logEvent('error', 'payrail_quote_failed', {
-      request_id: ctx.requestId,
-      subscription_id: id,
-      plan: paidPlan,
-      ...errorFields(err),
-    });
-    return jsonError('rail_unavailable', 502);
+    return Response.json({ error: 'rail_unavailable', detail: String(err) }, { status: 502 });
   }
   await env.EF_SUBS.put(
     `pending:${q.quote_id}`,
@@ -812,117 +523,48 @@ async function handleSubscribe(req: Request, env: Env, ctx: RequestContext): Pro
 // A buyer who paid posts { quote_id, tx_hash }. We forward it to payrail
 // /receipt — the receipt's payer_ref == tx_hash is the TIER-1 artifact — then
 // flip the pending sub to active, then issue the real-time API key.
-async function handleConfirm(req: Request, env: Env, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'POST') return methodNotAllowed(['POST']);
-  const parsed = await readJsonObject(req);
-  if (!parsed.ok) return parsed.response;
-
-  const quoteId = typeof parsed.value.quote_id === 'string' ? parsed.value.quote_id.trim() : '';
-  const txHash = typeof parsed.value.tx_hash === 'string' ? parsed.value.tx_hash.trim() : '';
-  if (!quoteId || !txHash) {
-    return jsonError('quote_id and tx_hash required', 400);
+async function handleConfirm(req: Request, env: Env): Promise<Response> {
+  if (req.method !== 'POST') return new Response('POST only', { status: 405 });
+  const body = await req.json().catch(() => null) as { quote_id?: string; tx_hash?: string } | null;
+  if (!body?.quote_id || !body?.tx_hash) {
+    return Response.json({ error: 'quote_id and tx_hash required' }, { status: 400 });
   }
-  if (!isSafeToken(quoteId, 128) || !isSafeToken(txHash, MAX_TOKEN_LENGTH)) {
-    return jsonError('quote_id and tx_hash must be safe tokens', 400);
-  }
-
-  const pendingRaw = await env.EF_SUBS.get(`pending:${quoteId}`);
-  if (!pendingRaw) return jsonError('quote_not_found_or_expired', 404);
-
-  let pending: { quote_id: string; subscription_id: string; plan: PaidPlan };
-  try {
-    const parsedPending = JSON.parse(pendingRaw);
-    if (
-      !isRecord(parsedPending) ||
-      typeof parsedPending.subscription_id !== 'string' ||
-      !isSafeToken(parsedPending.subscription_id, 128) ||
-      (parsedPending.plan !== 'pro' && parsedPending.plan !== 'institutional')
-    ) {
-      throw new Error('invalid pending subscription shape');
-    }
-    pending = {
-      quote_id: quoteId,
-      subscription_id: parsedPending.subscription_id,
-      plan: parsedPending.plan,
-    };
-  } catch (err) {
-    logEvent('error', 'pending_subscription_corrupt', {
-      request_id: ctx.requestId,
-      quote_id: quoteId,
-      ...errorFields(err),
-    });
-    return jsonError('pending_subscription_corrupt', 500);
-  }
+  const pendingRaw = await env.EF_SUBS.get(`pending:${body.quote_id}`);
+  if (!pendingRaw) return Response.json({ error: 'quote_not_found_or_expired' }, { status: 404 });
+  const pending = JSON.parse(pendingRaw) as { quote_id: string; subscription_id: string; plan: PaidPlan };
   const plan: PaidPlan = pending.plan === 'institutional' ? 'institutional' : 'pro';
 
   const payload = JSON.stringify({
-    quote_id: quoteId,
+    quote_id: body.quote_id,
     ship: 'edgarflash',
     sku: `edgarflash:${plan}`,
     amount: PRICES[plan],
     currency: 'USDC',
     rail: 'crypto',
-    tx_hash: txHash,
+    tx_hash: body.tx_hash,
   });
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (env.SHIP_HMAC_SECRET) headers['x-payrail-signature'] = await hmacHex(env.SHIP_HMAC_SECRET, payload);
 
-  let rr: Response;
-  try {
-    rr = await payrailFetch(env, '/receipt', { method: 'POST', headers, body: payload });
-  } catch (err) {
-    logEvent('error', 'payrail_receipt_error', {
-      request_id: ctx.requestId,
-      quote_id: quoteId,
-      subscription_id: pending.subscription_id,
-      ...errorFields(err),
-    });
-    return jsonError('receipt_unavailable', 502);
-  }
+  const rr = await payrailFetch(env, '/receipt', { method: 'POST', headers, body: payload });
   if (!rr.ok) {
-    const detail = await rr.text().catch(() => '');
-    logEvent('warn', 'payrail_receipt_rejected', {
-      request_id: ctx.requestId,
-      quote_id: quoteId,
-      subscription_id: pending.subscription_id,
-      status: rr.status,
-      detail: detail.slice(0, 200),
-    });
     return Response.json(
-      { error: 'receipt_rejected', status: rr.status },
+      { error: 'receipt_rejected', status: rr.status, detail: await rr.text().catch(() => '') },
       { status: 502 },
     );
   }
 
   const subRaw = await env.EF_SUBS.get(`sub:${pending.subscription_id}`);
-  if (!subRaw) return jsonError('subscription_not_found', 404);
-
-  let sub: Subscription;
-  try {
-    sub = JSON.parse(subRaw) as Subscription;
-  } catch (err) {
-    logEvent('error', 'subscription_json_corrupt', {
-      request_id: ctx.requestId,
-      subscription_id: pending.subscription_id,
-      ...errorFields(err),
-    });
-    return jsonError('subscription_corrupt', 500);
-  }
+  if (!subRaw) return Response.json({ error: 'subscription_not_found' }, { status: 404 });
+  const sub = JSON.parse(subRaw) as Subscription;
   sub.active = true;
   sub.activated_at = new Date().toISOString();
   sub.current_period_end = currentPeriodEnd();
-  sub.payment_quote_id = quoteId;
-  sub.payment_tx_hash = txHash;
+  sub.payment_quote_id = body.quote_id;
+  sub.payment_tx_hash = body.tx_hash;
   const apiKey = sub.api_key_hash && sub.api_key_id ? undefined : await issueApiKey(env, sub);
   await env.EF_SUBS.put(`sub:${pending.subscription_id}`, JSON.stringify(sub));
-  await env.EF_SUBS.delete(`pending:${quoteId}`);
-  logEvent('info', 'subscription_activated', {
-    request_id: ctx.requestId,
-    subscription_id: pending.subscription_id,
-    quote_id: quoteId,
-    plan: sub.plan,
-    api_key_issued: Boolean(apiKey),
-  });
+  await env.EF_SUBS.delete(`pending:${body.quote_id}`);
   return Response.json({
     status: 'active',
     subscription_id: pending.subscription_id,
@@ -937,57 +579,20 @@ async function handleConfirm(req: Request, env: Env, ctx: RequestContext): Promi
 }
 
 // Poll payment status by proxying payrail's public receipt lookup.
-async function handlePayStatus(req: Request, env: Env, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'GET') return methodNotAllowed(['GET']);
+async function handlePayStatus(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
-  const quoteId = url.searchParams.get('quote_id')?.trim() ?? '';
-  if (!quoteId) return jsonError('quote_id required', 400);
-  if (!isSafeToken(quoteId, 128)) return jsonError('quote_id must be a safe token', 400);
-
-  let r: Response;
-  try {
-    r = await payrailFetch(env, `/receipt/${encodeURIComponent(quoteId)}`);
-  } catch (err) {
-    logEvent('error', 'payrail_status_error', {
-      request_id: ctx.requestId,
-      quote_id: quoteId,
-      ...errorFields(err),
-    });
-    return jsonError('status_unavailable', 502);
-  }
-
+  const quoteId = url.searchParams.get('quote_id');
+  if (!quoteId) return Response.json({ error: 'quote_id required' }, { status: 400 });
+  const r = await payrailFetch(env, `/receipt/${encodeURIComponent(quoteId)}`);
   if (r.status === 404) return Response.json({ paid: false, quote_id: quoteId });
   if (!r.ok) return Response.json({ error: 'status_unavailable', status: r.status }, { status: 502 });
-
-  try {
-    return Response.json({ paid: true, receipt: await r.json() });
-  } catch (err) {
-    logEvent('error', 'payrail_status_invalid_json', {
-      request_id: ctx.requestId,
-      quote_id: quoteId,
-      ...errorFields(err),
-    });
-    return jsonError('status_unavailable', 502);
-  }
+  return Response.json({ paid: true, receipt: await r.json() });
 }
 
-async function handleSubscription(req: Request, env: Env, id: string, ctx: RequestContext): Promise<Response> {
-  if (req.method !== 'GET') return methodNotAllowed(['GET']);
-  if (!isSafeToken(id, 128)) return jsonError('not found', 404);
+async function handleSubscription(req: Request, env: Env, id: string): Promise<Response> {
   const v = await env.EF_SUBS.get(`sub:${id}`);
-  if (!v) return jsonError('not found', 404);
-
-  let sub: Subscription;
-  try {
-    sub = JSON.parse(v) as Subscription;
-  } catch (err) {
-    logEvent('error', 'subscription_json_corrupt', {
-      request_id: ctx.requestId,
-      subscription_id: id,
-      ...errorFields(err),
-    });
-    return jsonError('subscription_corrupt', 500);
-  }
+  if (!v) return Response.json({ error: 'not found' }, { status: 404 });
+  const sub = JSON.parse(v) as Subscription;
   // Don't return webhook_url in public response
   return Response.json({
     id: sub.id,
@@ -1005,8 +610,7 @@ async function handleSubscription(req: Request, env: Env, id: string, ctx: Reque
   });
 }
 
-async function handleStatus(req: Request, env: Env): Promise<Response> {
-  if (req.method !== 'GET') return methodNotAllowed(['GET']);
+async function handleStatus(_req: Request, env: Env): Promise<Response> {
   const subs = await listSubscriptions(env);
   const recent = await loadRecentFeed(env);
   return Response.json({
@@ -1032,53 +636,21 @@ async function handleStatus(req: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const startedAt = Date.now();
     const url = new URL(req.url);
-    const ctx: RequestContext = {
-      requestId: normalizeRequestId(req),
-      method: req.method,
-      path: url.pathname,
-    };
+    if (url.pathname === '/api/feed') return handleApiFeed(req, env);
+    if (url.pathname === '/api/realtime') return handleRealtimeFeed(req, env);
+    if (url.pathname === '/api/subscribe') return handleSubscribe(req, env);
+    if (url.pathname === '/api/confirm') return handleConfirm(req, env);
+    if (url.pathname === '/api/pay-status') return handlePayStatus(req, env);
+    if (url.pathname === '/api/status') return handleStatus(req, env);
 
-    try {
-      let response: Response;
-      if (url.pathname === '/api/feed') response = await handleApiFeed(req, env, ctx);
-      else if (url.pathname === '/api/realtime') response = await handleRealtimeFeed(req, env, ctx);
-      else if (url.pathname === '/api/subscribe') response = await handleSubscribe(req, env, ctx);
-      else if (url.pathname === '/api/confirm') response = await handleConfirm(req, env, ctx);
-      else if (url.pathname === '/api/pay-status') response = await handlePayStatus(req, env, ctx);
-      else if (url.pathname === '/api/status') response = await handleStatus(req, env);
-      else {
-        const subMatch = url.pathname.match(/^\/api\/subscription\/([a-zA-Z0-9_-]+)$/);
-        response = subMatch ? await handleSubscription(req, env, subMatch[1], ctx) : await env.ASSETS.fetch(req);
-      }
+    const subMatch = url.pathname.match(/^\/api\/subscription\/([a-zA-Z0-9_-]+)$/);
+    if (subMatch) return handleSubscription(req, env, subMatch[1]);
 
-      logEvent('info', 'request_completed', {
-        request_id: ctx.requestId,
-        method: ctx.method,
-        path: ctx.path,
-        status: response.status,
-        duration_ms: Date.now() - startedAt,
-      });
-      return withRequestId(response, ctx.requestId);
-    } catch (err) {
-      logEvent('error', 'request_failed', {
-        request_id: ctx.requestId,
-        method: ctx.method,
-        path: ctx.path,
-        duration_ms: Date.now() - startedAt,
-        ...errorFields(err),
-      });
-      const response = ctx.path.startsWith('/api/')
-        ? Response.json({ error: 'internal_error', request_id: ctx.requestId }, { status: 500 })
-        : new Response('internal error', { status: 500 });
-      return withRequestId(response, ctx.requestId);
-    }
+    return env.ASSETS.fetch(req);
   },
 
   async scheduled(_ev: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runCron(env).catch(err => {
-      logEvent('error', 'scheduled_failed', errorFields(err));
-    }));
+    ctx.waitUntil(runCron(env));
   },
 };
