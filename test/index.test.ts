@@ -3,6 +3,8 @@ import {
   isPaidPlan,
   currentPeriodEnd,
   hasPaidAccess,
+  hashApiKey,
+  apiKeyHashMatches,
   sha256Hex,
   timingSafeEqualHex,
   extractApiKey,
@@ -56,6 +58,27 @@ describe('crypto helpers', () => {
     expect(timingSafeEqualHex('abcd', 'abcd')).toBe(true);
     expect(timingSafeEqualHex('abcd', 'abce')).toBe(false);
     expect(timingSafeEqualHex('abc', 'abcd')).toBe(false);
+  });
+
+  it('hashApiKey uses the configured HMAC secret and verifies by secret', async () => {
+    const apiKey = 'ef_live_ak_123.secretpart';
+    const env = { EF_API_KEY_SECRET: 'test-secret' };
+    const hash = await hashApiKey(env, apiKey);
+
+    expect(hash).toMatch(/^hmac-sha256:[0-9a-f]{64}$/);
+    expect(await apiKeyHashMatches(env, apiKey, hash)).toBe(true);
+    expect(await apiKeyHashMatches({ EF_API_KEY_SECRET: 'wrong-secret' }, apiKey, hash)).toBe(false);
+    expect(await apiKeyHashMatches({}, apiKey, hash)).toBe(false);
+  });
+
+  it('apiKeyHashMatches accepts explicit and legacy SHA-256 hashes', async () => {
+    const apiKey = 'ef_live_ak_123.secretpart';
+    const digest = await sha256Hex(apiKey);
+
+    expect(await hashApiKey({}, apiKey)).toBe(digest);
+    expect(await apiKeyHashMatches({}, apiKey, `sha256:${digest}`)).toBe(true);
+    expect(await apiKeyHashMatches({}, apiKey, digest)).toBe(true);
+    expect(await apiKeyHashMatches({}, `${apiKey}x`, digest)).toBe(false);
   });
 });
 

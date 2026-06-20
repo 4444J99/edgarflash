@@ -23,6 +23,40 @@ GET  /api/status            — System health
 Paid API calls accept either `Authorization: Bearer <api_key>` or `x-api-key:
 <api_key>`.
 
+## Authentication
+
+Paid subscriptions receive a single API key from `POST /api/confirm` after
+payment confirmation. The key is only returned on activation; EdgarFlash stores
+the key id plus a hash in `EF_SUBS`, never the secret itself.
+
+Use the key on real-time requests:
+
+```bash
+curl -H "Authorization: Bearer $EDGARFLASH_API_KEY" \
+  https://edgarflash.ivixivi.workers.dev/api/realtime
+```
+
+When `EF_API_KEY_SECRET` is configured, new API keys are stored as
+HMAC-SHA256 hashes using that secret. Without it, new keys use the legacy
+SHA-256 hash format. Legacy SHA-256 hashes remain accepted so existing paid
+subscribers keep working during rollout.
+
+## Configuration
+
+`wrangler.toml` defines the Worker entrypoint, static assets, cron schedule,
+`EF_STATE` / `EF_SUBS` KV bindings, the public `USER_AGENT`, the optional
+`PAYRAIL_URL`, and the preferred `PAYRAIL` service binding.
+
+Secrets are configured outside `wrangler.toml`:
+
+```bash
+wrangler secret put EF_API_KEY_SECRET   # HMAC secret for API-key hashes
+wrangler secret put SHIP_HMAC_SECRET    # optional signature for payrail receipts
+```
+
+For local development, copy `.dev.vars.example` to `.dev.vars` and fill in
+development-only values. `.dev.vars` is gitignored.
+
 ## Pricing
 
 | Tier          | Price   | What's included                                      |

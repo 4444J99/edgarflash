@@ -25,6 +25,7 @@ interface Env {
   // SHIP_HMAC_SECRET (a wrangler secret, unset by default) signs receipt writes.
   PAYRAIL?: Fetcher;
   PAYRAIL_URL?: string;
+  EF_API_KEY_SECRET?: string;
   SHIP_HMAC_SECRET?: string;
 }
 
@@ -68,6 +69,8 @@ const PAID_PERIOD_DAYS = 31;
 const STATE_KEY_LAST_FILINGS = 'last_seen_filings';
 const FEED_CACHE_KEY = 'feed:recent';
 const API_KEY_PREFIX = 'ef_live';
+const API_KEY_HASH_HMAC_PREFIX = 'hmac-sha256:';
+const API_KEY_HASH_SHA256_PREFIX = 'sha256:';
 
 // === payrail (shared fleet money rail) ===
 // edgarflash plugs into the live payrail Worker instead of re-implementing
@@ -328,6 +331,37 @@ export async function sha256Hex(message: string): Promise<string> {
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function apiKeyHashMessage(apiKey: string): string {
+  return `edgarflash-api-key:${apiKey}`;
+}
+
+export async function hashApiKey(env: Pick<Env, 'EF_API_KEY_SECRET'>, apiKey: string): Promise<string> {
+  const secret = env.EF_API_KEY_SECRET?.trim();
+  if (secret) return `${API_KEY_HASH_HMAC_PREFIX}${await hmacHex(secret, apiKeyHashMessage(apiKey))}`;
+  return sha256Hex(apiKey);
+}
+
+export async function apiKeyHashMatches(
+  env: Pick<Env, 'EF_API_KEY_SECRET'>,
+  apiKey: string,
+  storedHash: string,
+): Promise<boolean> {
+  if (storedHash.startsWith(API_KEY_HASH_HMAC_PREFIX)) {
+    const secret = env.EF_API_KEY_SECRET?.trim();
+    if (!secret) return false;
+    const expected = await hmacHex(secret, apiKeyHashMessage(apiKey));
+    return timingSafeEqualHex(expected, storedHash.slice(API_KEY_HASH_HMAC_PREFIX.length));
+  }
+
+  const expectedSha = await sha256Hex(apiKey);
+  if (storedHash.startsWith(API_KEY_HASH_SHA256_PREFIX)) {
+    return timingSafeEqualHex(expectedSha, storedHash.slice(API_KEY_HASH_SHA256_PREFIX.length));
+  }
+
+  // Legacy rows stored a bare SHA-256 hex digest before EF_API_KEY_SECRET existed.
+  return /^[0-9a-f]{64}$/.test(storedHash) && timingSafeEqualHex(expectedSha, storedHash);
+}
+
 export function timingSafeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -340,7 +374,7 @@ async function issueApiKey(env: Env, sub: Subscription): Promise<string> {
   const keyId = newId('ak_');
   const apiKey = `${API_KEY_PREFIX}_${keyId}.${newSecret()}`;
   sub.api_key_id = keyId;
-  sub.api_key_hash = await sha256Hex(apiKey);
+  sub.api_key_hash = await hashApiKey(env, apiKey);
   await env.EF_SUBS.put(`api:${keyId}`, sub.id);
   return apiKey;
 }
@@ -393,8 +427,9 @@ async function authenticateApiKey(req: Request, env: Env): Promise<ApiAuthResult
   if (!hasPaidAccess(sub)) return { presented: true, error: 'inactive_subscription', status: 403 };
   if (!sub.api_key_hash) return { presented: true, error: 'api_key_not_enabled', status: 403 };
 
-  const digest = await sha256Hex(apiKey);
-  if (!timingSafeEqualHex(digest, sub.api_key_hash)) return { presented: true, error: 'invalid_api_key', status: 401 };
+  if (!await apiKeyHashMatches(env, apiKey, sub.api_key_hash)) {
+    return { presented: true, error: 'invalid_api_key', status: 401 };
+  }
 
   return { presented: true, sub };
 }
