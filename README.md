@@ -11,17 +11,21 @@ filings via webhook and API-key feeds to paid subscribers. Free tier is delayed
 
 ## API
 
+Customer-facing endpoint, authentication, webhook, and usage examples live in
+[docs/API.md](./docs/API.md).
+
 ```
-GET  /api/feed              — Delayed public feed; real-time with Authorization: Bearer ef_live_...
+GET  /api/feed              — Delayed public feed; real-time with a paid API key
 GET  /api/realtime          — Paid API-key real-time feed
-POST /api/subscribe         — Create free/pending paid subscription
+POST /api/subscribe         — Create free subscription or paid checkout
 POST /api/confirm           — Confirm payment and receive one-time API key
+GET  /api/pay-status        — Payment receipt status by quote_id
 GET  /api/subscription/:id  — Subscription status, no API secret
-GET  /api/status            — System health
+GET  /api/status            — System health and plan limits
 ```
 
-Paid API calls accept either `Authorization: Bearer <api_key>` or `x-api-key:
-<api_key>`.
+Paid API calls accept `Authorization: Bearer <api_key>` or `x-api-key:
+<api_key>`. The Bearer header is recommended.
 
 ## Authentication
 
